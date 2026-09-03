@@ -1,6 +1,6 @@
 """The contract a teleoperable environment has to satisfy.
 
-Claw Crew's own `Game` already worked this way; this module just names the
+Skillcrane's own `Game` already worked this way; this module just names the
 shape so benchmark environments can be driven by the same gamepad, the same
 HUD and the same recorder.
 

@@ -1,4 +1,4 @@
-"""Claw Crew's own arm, wrapped in the TeleopEnv contract.
+"""Skillcrane's own arm, wrapped in the TeleopEnv contract.
 
 This is the reference implementation: `Game` already had every method in the
 right shape, so the adapter is mostly forwarding. It exists so that the native

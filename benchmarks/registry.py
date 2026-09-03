@@ -73,7 +73,7 @@ def _fetch(task, seed):
 FAMILIES = {
     NATIVE: Family(
         NATIVE, "game", "(built in)",
-        "Claw Crew's own 6-DoF arm and cube.",
+        "Skillcrane's own 6-DoF arm and cube.",
         ("default",), _native),
     "robosuite": Family(
         "robosuite", "robosuite", "pip install -r requirements-benchmarks.txt",

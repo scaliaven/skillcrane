@@ -1,6 +1,6 @@
 # Development log
 
-How Claw Crew got from a single-file prototype to the module layout in
+How Skillcrane got from a single-file prototype to the module layout in
 `README.md`, and — more usefully — which numbers forced which decisions.
 
 The arc: it started as a **manipulation game** and ended as **manipulation in sim
@@ -206,7 +206,7 @@ benchmarks already take the action this rig produces —
 ```
 robosuite / LIBERO   [dx, dy, dz, drx, dry, drz, grip]   (our dyaw -> drz)
 Meta-World / Fetch   [dx, dy, dz,                grip]   (dyaw unused)
-Claw Crew sticks     [dx, dy, dz,          dyaw, grip]
+Skillcrane sticks     [dx, dy, dz,          dyaw, grip]
 ```
 
 so `benchmarks/` is a remapping layer over one small `TeleopEnv` contract, with

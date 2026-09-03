@@ -1,15 +1,20 @@
-# Claw Crew
+# Skillcrane
 
-**Manipulation in sim + demonstration data collection.** A 6-DoF robot arm you
-teleoperate in MuJoCo with an 8BitDo gamepad — and the rig that records what you
-did, so a policy can learn it.
+> **Teleoperated manipulation in sim, and the skills it collects.**
+>
+> Gamepad teleoperation for MuJoCo manipulation that records LeRobot
+> demonstrations — natively, or on robosuite, Meta-World, Fetch and LIBERO.
 
-It started as a manipulation *game*: grab the cube, drop it in the zone, beat the
-clock. Building that well meant solving the hard part of a teleop rig anyway — an
-arm that tracks your hand smoothly enough to do fine manipulation with. Once that
-worked, every round played was already a demonstration, so the same rig now logs
-each control tick as an imitation-learning episode. The game is the interface;
-the dataset is the output.
+A 6-DoF robot arm you teleoperate with an 8BitDo gamepad, and the rig that
+records what you did so a policy can learn it.
+
+A *skill crane* is the trade name for an arcade claw machine, which is what this
+started as: grab the cube, drop it in the zone, beat the clock. Building that
+well meant solving the hard part of a teleop rig anyway — an arm that tracks
+your hand smoothly enough to do fine manipulation with. Once that worked, every
+round played was already a demonstration, so the same rig now logs each control
+tick as an imitation-learning episode. The game is the interface; the dataset is
+the output.
 
 Runs under plain `python` on macOS/Apple Silicon — MuJoCo renders offscreen and
 pygame owns the window, so nothing fights over the main thread.
@@ -120,5 +125,6 @@ gripper-sign table and two other install landmines.
 ## Note
 
 `arm_game.py` is the original single-file prototype, kept for reference. It is
-**superseded** by the modules above and its actuator tuning predates the
-tracking work (constraints 7–9 in `CLAUDE.md`) — read the modules, not it.
+**superseded** by the modules above: its actuator tuning predates the tracking
+work (constraints 7–9 in `CLAUDE.md`), and it predates the rename, so it still
+says "Claw Crew" inside. Read the modules, not it.

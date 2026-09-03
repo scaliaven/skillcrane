@@ -37,7 +37,7 @@ RED = (240, 120, 110)
 class Display:
     """Window, HUD, and a place to blit whatever the environment rendered."""
 
-    def __init__(self, caption="Claw Crew"):
+    def __init__(self, caption="Skillcrane"):
         pygame.init()
         pygame.display.set_caption(caption)
         self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))

@@ -1,11 +1,11 @@
-"""robosuite environments driven by the Claw Crew teleop loop.
+"""robosuite environments driven by the Skillcrane teleop loop.
 
 robosuite's BASIC/OSC controller takes exactly the action this project already
 produces: a Cartesian delta plus a gripper bit. So the adapter is a remapping,
 not a re-implementation --
 
     robosuite action = [dx, dy, dz, drx, dry, drz, grip]      (7-D)
-    Claw Crew stick  = [dx, dy, dz,           dyaw,  grip]
+    Skillcrane stick  = [dx, dy, dz,           dyaw,  grip]
 
 with our yaw driving drz. The controller clamps its own output, which is what
 rate-limits the target here (constraint 6) -- we scale the sticks and let OSC

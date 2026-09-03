@@ -37,7 +37,7 @@ class EpisodeRecorder:
         self.episode_index = episode_index
         self.image_key = image_key
         # Benchmark environments have their own observation widths, so the
-        # schema is per-recorder. The module constants stay the Claw Crew
+        # schema is per-recorder. The module constants stay the Skillcrane
         # defaults so existing callers and tests are unaffected.
         self.state_names = list(state_names or STATE_NAMES)
         self.action_names = list(action_names or ACTION_NAMES)
@@ -135,7 +135,7 @@ class EpisodeRecorder:
 
         info = {
             "codebase_version": "v2.1",
-            "robot_type": "clawcrew",
+            "robot_type": "skillcrane",
             "total_episodes": ep + 1,
             "total_frames": n,
             "total_tasks": 1,

@@ -1,6 +1,6 @@
-"""Claw Crew -- teleoperate a robot arm in MuJoCo, and record what you did.
+"""Skillcrane -- teleoperate a robot arm in MuJoCo, and record what you did.
 
-    python main.py                        play the native Claw Crew arm
+    python main.py                        play the native Skillcrane arm
     python main.py --list-envs            show benchmark environments
     python main.py --env robosuite:Lift   teleop a benchmark instead
     python main.py --headless             scripted pick-and-place, no window
@@ -110,7 +110,7 @@ def run_game(seed=None, record=None, env_spec: str = "native") -> int:
     if seed is None:
         seed = int(np.random.randint(1 << 30))
     env = benchmarks.make(env_spec, seed=seed)
-    display = Display(caption=f"Claw Crew - {env_spec}")
+    display = Display(caption=f"Skillcrane - {env_spec}")
 
     pad = GamepadReader.open()
     if pad:
@@ -175,7 +175,7 @@ def run_game(seed=None, record=None, env_spec: str = "native") -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Claw Crew teleop + data collection")
+    ap = argparse.ArgumentParser(description="Skillcrane teleop + data collection")
     ap.add_argument("--env", default="native", metavar="FAMILY[:TASK]",
                     help="environment to drive, e.g. robosuite:Lift (see --list-envs)")
     ap.add_argument("--list-envs", action="store_true",

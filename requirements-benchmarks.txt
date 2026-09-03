@@ -20,7 +20,7 @@
 mujoco<3.12
 
 # numba (via robosuite) has no wheels for numpy 2.x yet, which is what drags
-# numpy back to the 1.26 line. The core Claw Crew suite passes on both.
+# numpy back to the 1.26 line. The core Skillcrane suite passes on both.
 numpy<2
 
 robosuite>=1.5,<1.6

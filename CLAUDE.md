@@ -1,4 +1,4 @@
-# Claw Crew — manipulation in sim + data collection
+# Skillcrane — manipulation in sim + data collection
 
 A 6-DoF arm in MuJoCo, driven with an 8BitDo gamepad, scored as pick-and-place.
 Target platform is **macOS on Apple Silicon**.
@@ -20,7 +20,7 @@ data pipeline consumes, and it must never need a window.
 ## Architecture
 
 ```
-clawcrew/
+skillcrane/
   scene.py        MJCF as a string + model constants
   kin.py          Arm (FK/Jacobian/pose error), IKController, down_R
   game.py         Game: physics, scoring, spawn logic. NO pygame import.

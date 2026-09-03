@@ -6,7 +6,7 @@ interface:
     [dx, dy, dz, grip]
 
 so the adapter is a remapping. They have no wrist joint to drive, so `dyaw` is
-ignored -- the sticks that rotate the Claw Crew wrist do nothing here, which is
+ignored -- the sticks that rotate the Skillcrane wrist do nothing here, which is
 a property of the benchmark, not a bug.
 
 The gripper sign is NOT consistent across families and was measured rather than

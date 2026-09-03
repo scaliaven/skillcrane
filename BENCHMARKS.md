@@ -81,7 +81,7 @@ Meta-World and Fetch want the same thing minus the wrist:
 ```
 robosuite / LIBERO   [dx, dy, dz, drx, dry, drz, grip]   7-D   (our dyaw -> drz)
 Meta-World / Fetch   [dx, dy, dz,                grip]   4-D   (dyaw unused)
-Claw Crew sticks     [dx, dy, dz,          dyaw, grip]
+Skillcrane sticks     [dx, dy, dz,          dyaw, grip]
 ```
 
 So `benchmarks/` is a remapping layer, not a re-implementation. Everything
@@ -108,7 +108,7 @@ i.e. `enum == np.int32`, and that reflected direction started returning False:
 
 Every robosuite env then dies in `_setup_references` with a bare
 `AssertionError`. Bisected to 3.12.0 exactly; hence `mujoco<3.12`. The core
-Claw Crew suite passes on both sides of that line (103 tests, 8.5 s either way),
+Skillcrane suite passes on both sides of that line (103 tests, 8.5 s either way),
 so sharing an environment costs nothing but the pin.
 
 **2. `egl_probe` won't build on CMake 4.** LIBERO → `robomimic==0.2.0` →
@@ -161,7 +161,7 @@ controller API is not the 1.5 one our adapter uses:
 
 ```sh
 conda env create -f environment-libero.yml
-conda activate clawcrew-libero
+conda activate skillcrane-libero
 printf 'N\n' | python -c "import libero.libero"    # one-time config prompt
 python main.py --env libero:libero_spatial/0
 ```

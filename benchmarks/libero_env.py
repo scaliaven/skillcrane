@@ -1,4 +1,4 @@
-"""LIBERO tasks driven by the Claw Crew teleop loop.
+"""LIBERO tasks driven by the Skillcrane teleop loop.
 
 LIBERO is a robosuite environment underneath, so the action is the same 7-D
 Cartesian delta the robosuite adapter uses. What is different is packaging:

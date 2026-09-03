@@ -1,4 +1,4 @@
-"""MJCF for the Claw Crew arm, plus the model constants everything else reads.
+"""MJCF for the Skillcrane arm, plus the model constants everything else reads.
 
 Nothing in here imports pygame or touches a display: the scene is pure model
 data so that `game.py` and the tests can use it headless.
@@ -57,7 +57,7 @@ NARM = len(ARM_JOINTS)
 def build_xml(offwidth: int = OFF_W, offheight: int = OFF_H) -> str:
     """MJCF as a string. Offscreen buffer size is baked in (see OFF_W above)."""
     return f"""
-<mujoco model="clawcrew">
+<mujoco model="skillcrane">
   <compiler angle="radian" autolimits="true"/>
   <option timestep="{TIMESTEP}" integrator="implicitfast" cone="elliptic"/>
 

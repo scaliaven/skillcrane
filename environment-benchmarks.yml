@@ -1,13 +1,13 @@
-# Conda environment for Claw Crew + the shared benchmark families
+# Conda environment for Skillcrane + the shared benchmark families
 # (robosuite, Meta-World, Gymnasium-Robotics Fetch).
 #
 #   conda env create -f environment-benchmarks.yml
-#   conda activate clawcrew-bench
+#   conda activate skillcrane-bench
 #   python main.py --list-envs
 #
-# Keep this separate from your core Claw Crew environment: it pins mujoco below
+# Keep this separate from your core Skillcrane environment: it pins mujoco below
 # 3.12 and numpy below 2, which the core project does not need.
-name: clawcrew-bench
+name: skillcrane-bench
 channels:
   - conda-forge
 dependencies:
