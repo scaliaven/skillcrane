@@ -1,0 +1,7 @@
+# Flat script layout, not an installable package -- this file only configures
+# the tools. Dependencies live in requirements.txt.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::RuntimeWarning"]

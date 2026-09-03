@@ -1,0 +1,53 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is the target platform; ubuntu proves the suite really is headless.
+        os: [macos-14, ubuntu-latest]
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install OpenGL for MuJoCo's offscreen renderer (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libosmesa6
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          # No display and no gamepad on any runner: pygame gets SDL's dummy
+          # video driver, MuJoCo renders through EGL on Linux. Tests that still
+          # cannot get a GL context skip themselves rather than failing.
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          MUJOCO_GL: ${{ runner.os == 'Linux' && 'egl' || 'cgl' }}
+        run: python -m pytest -q
+
+      - name: Headless acceptance run
+        env:
+          SDL_VIDEODRIVER: dummy
+          MUJOCO_GL: ${{ runner.os == 'Linux' && 'egl' || 'cgl' }}
+        run: python main.py --headless

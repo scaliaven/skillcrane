@@ -1,0 +1,11 @@
+# Core -- everything except --record needs only these.
+mujoco>=3.1
+pygame>=2.5
+numpy>=1.26
+
+# Tests
+pytest>=8.0
+
+# Optional: only imported by recorder.py for `main.py --record`.
+pyarrow>=15.0
+pillow>=10.0
