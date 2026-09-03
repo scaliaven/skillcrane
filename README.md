@@ -42,7 +42,8 @@ python main.py --list-envs      # benchmark environments, and what's installed
 python main.py --env robosuite:Lift          # teleop a benchmark instead
 python main.py --headless       # scripted pick-and-place, no window, exits 0 on a score
 python main.py --seed 7         # fixed cube spawns
-python main.py --record runs/   # log the session as a LeRobot dataset
+python main.py --record         # collect the session into runs/ (off unless asked)
+python main.py --record DIR     # ... into DIR instead
 python gamepad_probe.py         # discover your pad's axis/button indices
 ```
 
@@ -95,9 +96,10 @@ all of which must pass.
 
 ## Data collection
 
-`--record DIR` writes one row per 100 Hz control tick — `observation.state`
-(6 joints + gripper + cube xyz), `action` (the operator's stick input), and a
-rendered frame — in LeRobot v2.1 layout:
+Data collection is **off by default**. `--record` turns it on (bare, it collects
+into `runs/`; `--record DIR` picks the directory) and writes one row per 100 Hz
+control tick — `observation.state` (6 joints + gripper + cube xyz), `action`
+(the operator's stick input), and a rendered frame — in LeRobot v2.1 layout:
 
 ```
 DIR/data/chunk-000/episode_000000.parquet

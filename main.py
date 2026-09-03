@@ -4,7 +4,8 @@
     python main.py --list-envs            show benchmark environments
     python main.py --env robosuite:Lift   teleop a benchmark instead
     python main.py --headless             scripted pick-and-place, no window
-    python main.py --record runs/         log the session as a LeRobot dataset
+    python main.py --record               collect the session into runs/
+    python main.py --record DIR           ... into DIR instead (LeRobot format)
 
 Runs under plain `python`, not `mjpython`: environments render offscreen and
 pygame owns the window, so nothing fights over the macOS main thread.
@@ -27,6 +28,7 @@ import scene
 from game import Game, drive_to, scripted_grasp
 
 MAX_STEPS_PER_FRAME = 8      # keeps a slow env from spiralling on catch-up
+DEFAULT_RECORD_DIR = "runs/"  # where a bare --record collects to
 
 
 def run_headless(seed: int = 2, record=None, env_spec: str = "native") -> int:
@@ -183,8 +185,12 @@ def main(argv=None) -> int:
     ap.add_argument("--headless", action="store_true",
                     help="run a scripted pick-and-place with no window")
     ap.add_argument("--seed", type=int, default=None, help="spawn / task seed")
-    ap.add_argument("--record", metavar="DIR", default=None,
-                    help="log the episode to DIR in LeRobot dataset format")
+    # Off unless asked for: bare --record collects into DEFAULT_RECORD_DIR,
+    # --record DIR picks the directory.
+    ap.add_argument("--record", metavar="DIR", nargs="?",
+                    default=None, const=DEFAULT_RECORD_DIR,
+                    help="collect this session as a LeRobot dataset in DIR "
+                         f"(default {DEFAULT_RECORD_DIR}); off when omitted")
     a = ap.parse_args(argv)
 
     if a.list_envs:
