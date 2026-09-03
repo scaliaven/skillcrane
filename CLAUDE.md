@@ -1,9 +1,13 @@
-# Claw Crew — robot arm teleop game
+# Claw Crew — manipulation in sim + data collection
 
 A 6-DoF arm in MuJoCo, driven with an 8BitDo gamepad, scored as pick-and-place.
-Target platform is **macOS on Apple Silicon**. The long-term goal is a teleop rig
-that records demonstrations for imitation learning, so the sim/rules layer stays
-free of UI code.
+Target platform is **macOS on Apple Silicon**.
+
+It began as a manipulation game and became a demonstration-collection rig: the
+scoring loop is the teleop interface, and every round played is an
+imitation-learning episode (`--record`, LeRobot format, trains an ACT policy).
+That is why the sim/rules layer stays free of UI code — `game.py` is the part a
+data pipeline consumes, and it must never need a window.
 
 ## Stack
 

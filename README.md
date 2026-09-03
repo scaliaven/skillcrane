@@ -1,8 +1,21 @@
 # Claw Crew
 
-Teleoperate a 6-DoF robot arm in MuJoCo with an 8BitDo gamepad and score
-pick-and-place. Runs under plain `python` on macOS/Apple Silicon — MuJoCo renders
-offscreen and pygame owns the window, so nothing fights over the main thread.
+**Manipulation in sim + demonstration data collection.** A 6-DoF robot arm you
+teleoperate in MuJoCo with an 8BitDo gamepad — and the rig that records what you
+did, so a policy can learn it.
+
+It started as a manipulation *game*: grab the cube, drop it in the zone, beat the
+clock. Building that well meant solving the hard part of a teleop rig anyway — an
+arm that tracks your hand smoothly enough to do fine manipulation with. Once that
+worked, every round played was already a demonstration, so the same rig now logs
+each control tick as an imitation-learning episode. The game is the interface;
+the dataset is the output.
+
+Runs under plain `python` on macOS/Apple Silicon — MuJoCo renders offscreen and
+pygame owns the window, so nothing fights over the main thread.
+
+Project page: [`docs/index.html`](docs/index.html) · development history:
+[`DEVLOG.md`](DEVLOG.md) · physics constraints: [`CLAUDE.md`](CLAUDE.md)
 
 ## Install
 
@@ -63,7 +76,7 @@ Physics tests assert on numbers — contact count, joint velocity, tracking erro
 cube height, score — and the grasp tests are parametrised over 12 random spawns,
 all of which must pass.
 
-## Recording (stretch)
+## Data collection
 
 `--record DIR` writes one row per 100 Hz control tick — `observation.state`
 (6 joints + gripper + cube xyz), `action` (the operator's stick input), and a

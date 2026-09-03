@@ -1,7 +1,12 @@
 # Development log
 
 How Claw Crew got from a single-file prototype to the module layout in
-`README.md`, and — more usefully — which numbers forced which decisions. Every
+`README.md`, and — more usefully — which numbers forced which decisions.
+
+The arc: it started as a **manipulation game** and ended as **manipulation in sim
++ data collection**. Nothing about the physics changed when that happened — the
+tracking work in Stage 3 is exactly what a teleop rig needs to be usable by a
+human, and once it was usable, recording it (Stage 4, M7) was the small part. Every
 table here is measured output from the run that motivated the change, not an
 estimate.
 
