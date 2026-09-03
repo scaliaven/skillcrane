@@ -1,0 +1,36 @@
+# Conda environment for the LIBERO benchmark ONLY.
+#
+#   conda env create -f environment-libero.yml
+#   conda activate clawcrew-libero
+#   printf 'N\n' | python -c "import libero.libero"   # one-time config prompt
+#   python main.py --env libero:libero_spatial/0
+#
+# Why its own environment: LIBERO pins robosuite==1.4.0, whose controller API is
+# not the 1.5 one benchmarks/robosuite_env.py uses. Installing both in one place
+# leaves you with a robosuite that imports and then fails at make() time.
+# (benchmarks/registry.py version-checks for exactly this and reports robosuite
+# as unavailable here, rather than failing later.)
+#
+# Verified on macOS 15 / Apple Silicon / Python 3.12:
+#   libero 0.1.1  robosuite 1.4.0  robomimic 0.2.0  bddl 1.0.1
+#   mujoco 3.3.5  numpy 2.5.2  torch 2.14.0
+# All six suites load and step headless; assets download to ~/.cache/libero.
+name: clawcrew-libero
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  # LIBERO pulls robomimic 0.2.0, which builds `egl_probe` from source. Its
+  # CMakeLists declares cmake_minimum_required(<3.5), and CMake 4 removed
+  # compatibility with that, so the build fails. Pinning cmake below 4 here is
+  # the fix; if you install outside conda, export CMAKE_POLICY_VERSION_MINIMUM=3.5
+  # before pip install instead.
+  - "cmake<4"
+  - pip:
+      - "mujoco<3.12"          # robosuite's shim breaks on 3.12 -- see BENCHMARKS.md
+      - libero
+      - pygame>=2.5
+      - pytest>=8.0
+      - pyarrow>=15.0
+      - pillow>=10.0

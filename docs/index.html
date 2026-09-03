@@ -187,14 +187,16 @@
     <h1 class="wordmark"><span class="bracket">[</span>&#8202;claw crew&#8202;<span class="bracket">]</span></h1>
     <p class="tagline">
       A 6-DoF robot arm you teleoperate in MuJoCo with a gamepad &mdash; and the rig
-      that records what you did, so a policy can learn it.
+      that records what you did, so a policy can learn it. Now pointed at
+      robosuite, Meta-World, Fetch and LIBERO too.
     </p>
     <div class="chips">
       <span class="chip">MuJoCo 3.12</span>
       <span class="chip">Python 3.11+</span>
       <span class="chip">macOS / Apple Silicon</span>
       <span class="chip">100 Hz control</span>
-      <span class="chip ok">103 tests passing</span>
+      <span class="chip">4 benchmarks</span>
+      <span class="chip ok">116 tests passing</span>
     </div>
   </header>
 
@@ -248,7 +250,7 @@
 
   <section>
     <p class="eyebrow">Run it</p>
-    <h2>Five commands</h2>
+    <h2>Six commands</h2>
     <pre><span class="cm"># play</span>
 python main.py
 
@@ -257,6 +259,10 @@ python main.py <span class="fl">--headless</span>
 
 <span class="cm"># collect demonstrations as a LeRobot dataset</span>
 python main.py <span class="fl">--record</span> runs/
+
+<span class="cm"># drive an existing benchmark with the same rig</span>
+python main.py <span class="fl">--list-envs</span>
+python main.py <span class="fl">--env</span> robosuite:Lift
 
 <span class="cm"># find your 8BitDo's axis and button indices</span>
 python gamepad_probe.py
@@ -346,8 +352,9 @@ python -m pytest</pre>
           <tr><td class="mono id">M3</td><td>Grasping</td><td class="mono">cube z &gt; 0.15 on 12/12 seeds</td><td class="num mono">19</td></tr>
           <tr><td class="mono id">M4</td><td>Game rules</td><td class="mono">settled + in-zone + released</td><td class="num mono">17</td></tr>
           <tr><td class="mono id">M5</td><td>Input layer</td><td class="mono">fake pad, no hardware</td><td class="num mono">33</td></tr>
-          <tr><td class="mono id">M6</td><td>Render + HUD</td><td class="mono">renders, and mutates nothing</td><td class="num mono">5</td></tr>
+          <tr><td class="mono id">M6</td><td>Render + HUD</td><td class="mono">renders, and mutates nothing</td><td class="num mono">7</td></tr>
           <tr><td class="mono id">M7</td><td>Recording</td><td class="mono">LeRobot v2.1 on disk</td><td class="num mono">7</td></tr>
+          <tr><td class="mono id">M8</td><td>Benchmark adapters</td><td class="mono">one contract, four sims</td><td class="num mono">11</td></tr>
           <tr><td class="mono">&mdash;</td><td>Hard rule</td><td class="mono">runs with <span class="mono">import pygame</span> broken</td><td class="num mono">4</td></tr>
         </tbody>
       </table>
@@ -388,6 +395,7 @@ python -m pytest</pre>
           <tr><td class="mono">input.py</td><td>Gamepad + keyboard readers &#8594; one <span class="mono">ControlInput</span></td></tr>
           <tr><td class="mono">render.py</td><td>Offscreen render + HUD</td></tr>
           <tr><td class="mono">recorder.py</td><td>LeRobot-format episode logging</td></tr>
+          <tr><td class="mono">benchmarks/</td><td>Adapters: robosuite, Meta-World, Fetch, LIBERO</td></tr>
           <tr><td class="mono">main.py</td><td>CLI entry point</td></tr>
         </tbody>
       </table>
@@ -397,6 +405,49 @@ python -m pytest</pre>
       The camera-relative stick rotation lives on the input side, so <code>Game.step</code>
       takes plain world-frame floats and the whole sim layer runs headless. A test enforces
       that in a subprocess where <code>import pygame</code> raises.
+    </p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Benchmarks</p>
+    <h2>The same rig, pointed at somebody else's tasks</h2>
+    <p>
+      These benchmarks already take the action this project produces &mdash; a
+      Cartesian delta plus a gripper bit &mdash; so the adapters are a remapping,
+      not a re-implementation. The native arm goes through the same contract,
+      which is what keeps them honest.
+    </p>
+    <pre>robosuite / LIBERO   [dx, dy, dz, drx, dry, drz, grip]   <span class="cm">7-D  (our dyaw -&gt; drz)</span>
+Meta-World / Fetch   [dx, dy, dz,                grip]   <span class="cm">4-D  (dyaw unused)</span>
+Claw Crew sticks     [dx, dy, dz,          dyaw, grip]</pre>
+    <div class="scroll" style="margin-top:20px">
+      <table>
+        <thead><tr><th>Family</th><th>Verified by</th><th class="num">Env</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">robosuite 1.5.2</td><td>Lift / Panda, 84&times;84 offscreen, 20 steps&#8202;/&#8202;s</td><td class="num mono ok">shared</td></tr>
+          <tr><td class="mono">Meta-World 3.1.1</td><td><span class="mono">pick-place-v3</span>, 50 tasks</td><td class="num mono ok">shared</td></tr>
+          <tr><td class="mono">Fetch 1.4.2</td><td><span class="mono">FetchPickAndPlace-v4</span></td><td class="num mono ok">shared</td></tr>
+          <tr><td class="mono">LIBERO 0.1.1</td><td>all 6 suites, 130 tasks</td><td class="num mono">own</td></tr>
+          <tr><td class="mono">gym-aloha</td><td>runs, but 14-D bimanual joint control</td><td class="num mono">n/a</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:16px">
+      Three landmines, each found by running it rather than reading about it:
+      <strong>mujoco &ge; 3.12</strong> breaks every robosuite-based benchmark (its
+      mujoco-py shim compares a pybind11 enum against a <code>numpy.int32</code>, and
+      the reflected direction started returning False &mdash; bisected: fine through
+      3.11.0, broken at 3.12.0); <strong>egl_probe</strong> will not build on CMake&nbsp;4;
+      and <strong>importing robosuite sets <code>MUJOCO_GL=cgl</code></strong>, which
+      gymnasium does not recognise, so one benchmark silently breaks another in the
+      same process.
+    </p>
+    <p>
+      Gripper close signs disagree between families and were measured, not assumed
+      &mdash; robosuite <span class="mono">+1</span>, Meta-World <span class="mono">+1</span>,
+      Fetch <span class="mono">&minus;1</span>, LIBERO <span class="mono">+1</span>. A wrong
+      sign makes a task quietly unsolvable while looking like bad teleop, so a test
+      pins them.
     </p>
   </section>
 

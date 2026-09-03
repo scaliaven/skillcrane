@@ -31,10 +31,17 @@ class EpisodeRecorder:
     callers that record long sessions should pass `frame_every` > 1.
     """
 
-    def __init__(self, root, episode_index: int = 0, image_key: str = "observation.images.cam"):
+    def __init__(self, root, episode_index: int = 0, image_key: str = "observation.images.cam",
+                 state_names=None, action_names=None, task: str = TASK):
         self.root = Path(root)
         self.episode_index = episode_index
         self.image_key = image_key
+        # Benchmark environments have their own observation widths, so the
+        # schema is per-recorder. The module constants stay the Claw Crew
+        # defaults so existing callers and tests are unaffected.
+        self.state_names = list(state_names or STATE_NAMES)
+        self.action_names = list(action_names or ACTION_NAMES)
+        self.task = task
         self.states: list = []
         self.actions: list = []
         self.frames: list = []
@@ -111,10 +118,10 @@ class EpisodeRecorder:
                 break
 
         features = {
-            "observation.state": {"dtype": "float32", "shape": [len(STATE_NAMES)],
-                                  "names": STATE_NAMES},
-            "action": {"dtype": "float32", "shape": [len(ACTION_NAMES)],
-                       "names": ACTION_NAMES},
+            "observation.state": {"dtype": "float32", "shape": [len(self.state_names)],
+                                  "names": self.state_names},
+            "action": {"dtype": "float32", "shape": [len(self.action_names)],
+                       "names": self.action_names},
             "timestamp": {"dtype": "float32", "shape": [1], "names": None},
             "frame_index": {"dtype": "int64", "shape": [1], "names": None},
             "episode_index": {"dtype": "int64", "shape": [1], "names": None},
@@ -142,9 +149,9 @@ class EpisodeRecorder:
             "features": features,
         }
         _write_json(meta / "info.json", info)
-        _append_jsonl(meta / "tasks.jsonl", {"task_index": 0, "task": TASK}, key="task_index")
+        _append_jsonl(meta / "tasks.jsonl", {"task_index": 0, "task": self.task}, key="task_index")
         _append_jsonl(meta / "episodes.jsonl",
-                      {"episode_index": ep, "tasks": [TASK], "length": n},
+                      {"episode_index": ep, "tasks": [self.task], "length": n},
                       key="episode_index")
         _append_jsonl(meta / "episodes_stats.jsonl",
                       {"episode_index": ep, "stats": self._stats()},

@@ -195,11 +195,72 @@ imported lazily so the core keeps three dependencies.
 
 ---
 
+---
+
+## Stage 5 — existing benchmarks
+
+The question was whether LIBERO or robosuite could live inside this project.
+Answer: **four families work**, and the adapters are thin, because these
+benchmarks already take the action this rig produces —
+
+```
+robosuite / LIBERO   [dx, dy, dz, drx, dry, drz, grip]   (our dyaw -> drz)
+Meta-World / Fetch   [dx, dy, dz,                grip]   (dyaw unused)
+Claw Crew sticks     [dx, dy, dz,          dyaw, grip]
+```
+
+so `benchmarks/` is a remapping layer over one small `TeleopEnv` contract, with
+the native arm routed through the same path to keep it honest.
+
+| family | verified by |
+|---|---|
+| robosuite 1.5.2 | Lift/Panda, 84×84 offscreen, 20 steps/s |
+| Meta-World 3.1.1 | `pick-place-v3`, 4-D action |
+| Fetch (Gymnasium-Robotics 1.4.2) | `FetchPickAndPlace-v4` |
+| LIBERO 0.1.1 | all 6 suites, 130 tasks, own environment |
+| gym-aloha | runs, but 14-D bimanual joint control — not teleoperable here |
+
+Fourteen packages were surveyed in total. `BENCHMARKS.md` records all of them
+with the disposition and the evidence level, including the ones rejected
+(`gym-xarm` needs mujoco 2.x and is mutually exclusive with everything else;
+`gym-pusht` has no gripper; RLBench/Isaac/OmniGibson are not macOS) and the one
+near-miss worth remembering: `dm-control` wants `mujoco>=3.12`, making it the
+only family compatible with this project's *current* stack.
+
+Three landmines, each found by running it rather than reading about it:
+
+1. **mujoco ≥ 3.12 breaks every robosuite-based benchmark.** Its mujoco-py shim
+   asserts `joint_type in (mjJNT_HINGE, mjJNT_SLIDE)`; `joint_type` is a
+   `numpy.int32`, tuple membership compares `enum == np.int32`, and that
+   reflected direction started returning False. Bisected across 3.3 → 3.12:
+   fine through **3.11.0**, broken at **3.12.0**.
+2. **`egl_probe` (via robomimic 0.2.0) won't build on CMake 4** — its
+   `CMakeLists.txt` requires `<3.5`, which CMake 4 dropped. Fixed with
+   `cmake<4` or `CMAKE_POLICY_VERSION_MINIMUM=3.5`.
+3. **Importing robosuite sets `MUJOCO_GL=cgl`**, which gymnasium's renderer
+   does not recognise — so robosuite silently breaks Fetch and Meta-World in the
+   same process. Only surfaced because the test suite exercises two families
+   together.
+
+Gripper close signs disagree across families and were **measured**, not assumed:
+robosuite +1, Meta-World +1, Fetch **−1**, LIBERO +1. A wrong sign makes a task
+quietly unsolvable while looking like bad teleop, so a test pins them.
+
+One correction worth recording: the first run of the core suite under the
+benchmark stack took 55 s vs 8.5 s, which looked like a serious regression. It
+was cold-start GL context creation in a fresh venv — on a second run the two are
+8.46 s and 8.50 s. Sharing an environment costs the version pins and nothing
+else.
+
+---
+
 ## Final state
 
 ```
 $ python -m pytest -q
-103 passed in 8.25s
+116 passed, 10 skipped in 8.09s      # core only; benchmark tests skip
+125 passed,  1 skipped               # + robosuite / Meta-World / Fetch
+117 passed,  9 skipped               # inside the LIBERO environment
 ```
 
 | milestone | file | tests |
@@ -209,8 +270,9 @@ $ python -m pytest -q
 | M3 grasping | `test_m3_grasp.py` | 19 |
 | M4 game rules | `test_m4_rules.py` | 17 |
 | M5 input layer | `test_m5_input.py` | 33 |
-| M6 render + HUD | `test_m6_render.py` | 5 |
+| M6 render + HUD | `test_m6_render.py` | 7 |
 | M7 recording | `test_m7_record.py` | 7 |
+| M8 benchmarks | `test_benchmarks.py` | 11 (+10 skipped) |
 | hard rule | `test_no_pygame.py` | 4 |
 
 ## Known limits

@@ -1,12 +1,13 @@
-"""Claw Crew -- teleoperate a 6-DoF arm in MuJoCo with an 8BitDo gamepad.
+"""Claw Crew -- teleoperate a robot arm in MuJoCo, and record what you did.
 
-    python main.py                 play (gamepad if present, else keyboard)
-    python main.py --headless      scripted pick-and-place, no window
-    python main.py --seed 7        fixed cube spawns
-    python main.py --record runs/  log the session in LeRobot dataset format
+    python main.py                        play the native Claw Crew arm
+    python main.py --list-envs            show benchmark environments
+    python main.py --env robosuite:Lift   teleop a benchmark instead
+    python main.py --headless             scripted pick-and-place, no window
+    python main.py --record runs/         log the session as a LeRobot dataset
 
-Runs under plain `python`, not `mjpython`: MuJoCo renders offscreen and pygame
-owns the window, so nothing fights over the macOS main thread.
+Runs under plain `python`, not `mjpython`: environments render offscreen and
+pygame owns the window, so nothing fights over the macOS main thread.
 
 Controls
     left stick    move gripper horizontally (camera-relative)
@@ -23,11 +24,16 @@ import sys
 import numpy as np
 
 import scene
-from game import Game, scripted_grasp, drive_to
+from game import Game, drive_to, scripted_grasp
+
+MAX_STEPS_PER_FRAME = 8      # keeps a slow env from spiralling on catch-up
 
 
-def run_headless(seed: int = 2, record=None) -> int:
-    """Scripted smoke test. Exit 0 if the round scored."""
+def run_headless(seed: int = 2, record=None, env_spec: str = "native") -> int:
+    """Scripted acceptance run for the native arm; a smoke test for benchmarks."""
+    if env_spec != "native":
+        return _headless_benchmark(env_spec, seed, record)
+
     g = Game(seed=seed)
     print("cube spawn ", np.round(g.cube_pos(), 3), " ncon at rest:", g.d.ncon)
 
@@ -45,8 +51,6 @@ def run_headless(seed: int = 2, record=None) -> int:
         if rec is None:
             return
         ren.update_scene(game.d, cam)
-        # The scripted run has no stick input; the action is the target motion
-        # the script asked for, recovered from the commanded gripper state.
         rec.add(game.observation(), [0, 0, 0, 0, float(game.closed)], ren.render())
 
     scripted_grasp(g, on_tick=on_tick)
@@ -65,15 +69,48 @@ def run_headless(seed: int = 2, record=None) -> int:
     return 0 if g.score else 1
 
 
-def run_game(seed=None, record=None) -> int:
+def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60) -> int:
+    """Smoke test for a benchmark backend: build it, drive it, report.
+
+    Deliberately not an acceptance test -- these environments have their own
+    success criteria and we are only proving the adapter wiring is live.
+    """
+    import benchmarks
+    from recorder import EpisodeRecorder
+
+    env = benchmarks.make(env_spec, seed=seed)
+    print(f"env        {env_spec}  ({env.task})")
+    print(f"control_dt {env.control_dt:.4f}s   state dim {env.observation().size}")
+    rec = EpisodeRecorder(record, state_names=env.state_names,
+                          action_names=env.action_names, task=env.task) \
+        if record is not None else None
+
+    scored = 0
+    for i in range(ticks):
+        action = (0.0, 0.0, -0.4, 0.0, i > ticks // 2)     # descend, then close
+        scored += bool(env.step(*action, env.control_dt))
+        if rec is not None:
+            rec.add(env.observation(),
+                    [*action[:4], float(action[4])], env.frame(320, 240))
+    hud = env.hud()
+    print(f"after {ticks} ticks: ee {np.round(hud.ee, 3)}  score {hud.score}")
+    if rec is not None:
+        print("recorded   ", len(rec), "ticks ->", rec.save())
+    env.close()
+    return 0
+
+
+def run_game(seed=None, record=None, env_spec: str = "native") -> int:
     import pygame
-    from render import Display
+
+    import benchmarks
     from input import GamepadReader, KeyboardReader, merge
+    from render import CAM_SPEED, RENDER_H, RENDER_W, Display
 
     if seed is None:
         seed = int(np.random.randint(1 << 30))
-    g = Game(seed=seed)
-    display = Display(g.m)
+    env = benchmarks.make(env_spec, seed=seed)
+    display = Display(caption=f"Claw Crew - {env_spec}")
 
     pad = GamepadReader.open()
     if pad:
@@ -87,11 +124,12 @@ def run_game(seed=None, record=None) -> int:
     rec = None
     if record is not None:
         from recorder import EpisodeRecorder
-        rec = EpisodeRecorder(record)
+        rec = EpisodeRecorder(record, state_names=env.state_names,
+                              action_names=env.action_names, task=env.task)
         print(f"recording to {record}")
 
     frame_dt = 1 / 60
-    ticks_per_frame = max(1, int(round(frame_dt / scene.CTRL_DT)))
+    accum = 0.0
     running = True
     while running:
         for ev in pygame.event.get():
@@ -104,40 +142,59 @@ def run_game(seed=None, record=None) -> int:
         if pad:
             ci = merge(ci, pad.read())
         if ci.reset:
-            g.reset(full=True)
+            env.reset(full=True)
+        if ci.cam:
+            env.orbit(ci.cam * CAM_SPEED * frame_dt)
 
-        display.orbit(ci.cam, frame_dt)
-        dx, dy = ci.world_xy(math.radians(display.cam.azimuth))
+        dx, dy = ci.world_xy(math.radians(env.azimuth))
+        frame = env.frame(RENDER_W, RENDER_H)
 
-        frame = display.frame(g.d) if rec is not None else None
+        # Each environment runs at its own control rate (100 Hz here, 20 Hz for
+        # most benchmarks), so drive it from a time accumulator rather than
+        # assuming a fixed number of ticks per drawn frame.
+        accum += frame_dt
         scored = False
-        for i in range(ticks_per_frame):
-            scored |= bool(g.step(dx, dy, ci.mz, ci.dyaw, ci.grip))
+        steps = 0
+        while accum >= env.control_dt and steps < MAX_STEPS_PER_FRAME:
+            scored |= bool(env.step(dx, dy, ci.mz, ci.dyaw, ci.grip, env.control_dt))
+            accum -= env.control_dt
+            steps += 1
             if rec is not None:
-                # One row per control tick; only the first carries a new image.
-                rec.add(g.observation(), [dx, dy, ci.mz, ci.dyaw, float(ci.grip)],
-                        frame if i == 0 else None)
+                rec.add(env.observation(),
+                        [dx, dy, ci.mz, ci.dyaw, float(ci.grip)],
+                        frame if steps == 1 else None)
 
-        display.draw(g, scored, frame_dt)
+        display.draw(env.hud(), frame, scored, frame_dt)
         display.tick(60)
 
     if rec is not None and len(rec):
         print(f"recorded {len(rec)} ticks -> {rec.save()}")
+    env.close()
     display.close()
     return 0
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Claw Crew robot arm teleop game")
+    ap = argparse.ArgumentParser(description="Claw Crew teleop + data collection")
+    ap.add_argument("--env", default="native", metavar="FAMILY[:TASK]",
+                    help="environment to drive, e.g. robosuite:Lift (see --list-envs)")
+    ap.add_argument("--list-envs", action="store_true",
+                    help="show benchmark environments and whether they are installed")
     ap.add_argument("--headless", action="store_true",
                     help="run a scripted pick-and-place with no window")
-    ap.add_argument("--seed", type=int, default=None, help="cube spawn seed")
+    ap.add_argument("--seed", type=int, default=None, help="spawn / task seed")
     ap.add_argument("--record", metavar="DIR", default=None,
                     help="log the episode to DIR in LeRobot dataset format")
     a = ap.parse_args(argv)
+
+    if a.list_envs:
+        import benchmarks
+        print(benchmarks.describe())
+        return 0
     if a.headless:
-        return run_headless(seed=2 if a.seed is None else a.seed, record=a.record)
-    return run_game(seed=a.seed, record=a.record)
+        return run_headless(seed=2 if a.seed is None else a.seed,
+                            record=a.record, env_spec=a.env)
+    return run_game(seed=a.seed, record=a.record, env_spec=a.env)
 
 
 if __name__ == "__main__":

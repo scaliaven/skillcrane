@@ -14,8 +14,13 @@ the dataset is the output.
 Runs under plain `python` on macOS/Apple Silicon — MuJoCo renders offscreen and
 pygame owns the window, so nothing fights over the main thread.
 
-Project page: [`docs/index.html`](docs/index.html) · development history:
-[`DEVLOG.md`](DEVLOG.md) · physics constraints: [`CLAUDE.md`](CLAUDE.md)
+It also drives **existing benchmarks** — robosuite, Meta-World, Fetch and
+LIBERO — with the same gamepad and the same recorder, so demonstrations are
+collected against standard tasks rather than only our own.
+
+Project page: [`docs/index.html`](docs/index.html) · benchmarks:
+[`BENCHMARKS.md`](BENCHMARKS.md) · development history: [`DEVLOG.md`](DEVLOG.md)
+· physics constraints: [`CLAUDE.md`](CLAUDE.md)
 
 ## Install
 
@@ -28,6 +33,8 @@ pip install -r requirements.txt
 
 ```sh
 python main.py                  # play
+python main.py --list-envs      # benchmark environments, and what's installed
+python main.py --env robosuite:Lift          # teleop a benchmark instead
 python main.py --headless       # scripted pick-and-place, no window, exits 0 on a score
 python main.py --seed 7         # fixed cube spawns
 python main.py --record runs/   # log the session as a LeRobot dataset
@@ -60,6 +67,7 @@ stick, run `gamepad_probe.py` and edit the config block at the top of `input.py`
 | `input.py` | `GamepadReader`/`KeyboardReader` → `ControlInput` |
 | `render.py` | offscreen render + HUD |
 | `recorder.py` | LeRobot-format episode logging |
+| `benchmarks/` | adapters: robosuite, Meta-World, Fetch, LIBERO |
 | `main.py` | CLI entry point |
 
 `game.py` never imports `input.py` or `render.py`, so the whole sim/rules layer
@@ -69,8 +77,12 @@ runs headless. See `CLAUDE.md` for the physics constraints that must not be
 ## Tests
 
 ```sh
-python -m pytest -q          # 98 tests, ~7 s, no display and no gamepad needed
+python -m pytest -q          # 116 tests, ~8 s, no display and no gamepad needed
 ```
+
+Benchmark tests skip cleanly when the benchmark isn't installed, so a bare
+checkout stays green (116 passed / 10 skipped; 125 passed with the benchmark
+families installed).
 
 Physics tests assert on numbers — contact count, joint velocity, tracking error,
 cube height, score — and the grasp tests are parametrised over 12 random spawns,
@@ -89,6 +101,21 @@ DIR/meta/{info,episodes,tasks,episodes_stats}.{json,jsonl}
 ```
 
 which is the shape `lerobot` expects for training an ACT policy.
+
+## Benchmarks
+
+`python main.py --env <family>:<task>` drives an existing benchmark with the same
+rig. Verified working headless on Apple Silicon: **robosuite** (Lift, Stack,
+PickPlaceCan, Door), **Meta-World** (50 tasks), **Fetch**, and **LIBERO** (130
+tasks, in its own environment).
+
+```sh
+pip install -r requirements-benchmarks.txt      # robosuite, Meta-World, Fetch
+conda env create -f environment-libero.yml      # LIBERO (pins robosuite 1.4)
+```
+
+They need `mujoco<3.12` — see [`BENCHMARKS.md`](BENCHMARKS.md) for why, plus the
+gripper-sign table and two other install landmines.
 
 ## Note
 

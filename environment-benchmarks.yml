@@ -1,0 +1,28 @@
+# Conda environment for Claw Crew + the shared benchmark families
+# (robosuite, Meta-World, Gymnasium-Robotics Fetch).
+#
+#   conda env create -f environment-benchmarks.yml
+#   conda activate clawcrew-bench
+#   python main.py --list-envs
+#
+# Keep this separate from your core Claw Crew environment: it pins mujoco below
+# 3.12 and numpy below 2, which the core project does not need.
+name: clawcrew-bench
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # core
+      - "mujoco<3.12"          # see requirements-benchmarks.txt for why
+      - "numpy<2"
+      - pygame>=2.5
+      - pytest>=8.0
+      - pyarrow>=15.0
+      - pillow>=10.0
+      # benchmarks
+      - "robosuite>=1.5,<1.6"
+      - "metaworld>=3.1"
+      - "gymnasium>=1.1"
+      - "gymnasium-robotics>=1.4"

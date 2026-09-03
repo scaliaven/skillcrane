@@ -43,11 +43,11 @@ jobs:
           # cannot get a GL context skip themselves rather than failing.
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
-          MUJOCO_GL: ${{ runner.os == 'Linux' && 'egl' || 'cgl' }}
+          MUJOCO_GL: ${{ runner.os == 'Linux' && 'egl' || '' }}
         run: python -m pytest -q
 
       - name: Headless acceptance run
         env:
           SDL_VIDEODRIVER: dummy
-          MUJOCO_GL: ${{ runner.os == 'Linux' && 'egl' || 'cgl' }}
+          MUJOCO_GL: ${{ runner.os == 'Linux' && 'egl' || '' }}
         run: python main.py --headless

@@ -27,9 +27,16 @@ clawcrew/
   input.py        GamepadReader + KeyboardReader -> a common ControlInput dataclass
   render.py       offscreen render + HUD drawing
   recorder.py     LeRobot-format episode logging (optional deps)
-  main.py         CLI entry: --headless, --seed, --record
+  benchmarks/     adapters: native, robosuite, Meta-World, Fetch, LIBERO
+  main.py         CLI entry: --headless, --seed, --record, --env, --list-envs
   tests/
 ```
+
+`benchmarks/` is an adapter layer, not an abstraction over robots: every backend
+implements one small `TeleopEnv` contract (Cartesian delta + gripper bit), and
+the native arm goes through the same path so the adapters stay honest. Importing
+`benchmarks` costs nothing with none installed -- every backend imports lazily
+inside its factory.
 
 Hard rule: `game.py` must be importable and fully runnable without pygame or a
 display. `tests/test_no_pygame.py` enforces this in a subprocess where
@@ -104,9 +111,35 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 | M3 | grasping (12 seeds) | `test_m3_grasp.py` | 19 passed |
 | M4 | game rules | `test_m4_rules.py` | 17 passed |
 | M5 | input layer | `test_m5_input.py` | 33 passed |
-| M6 | render + HUD | `test_m6_render.py` | 5 passed |
+| M6 | render + HUD | `test_m6_render.py` | 7 passed |
 | M7 | recording (stretch) | `test_m7_record.py` | 7 passed |
+| M8 | benchmark adapters | `test_benchmarks.py` | 11 passed, 10 skipped |
 | — | hard rule | `test_no_pygame.py` | 4 passed |
+
+Totals: **116 passed / 10 skipped** with no benchmarks installed, **125 passed**
+with robosuite + Meta-World + Fetch, **117 passed** in the LIBERO environment.
+
+## Benchmark constraints
+
+10. **`mujoco<3.12` for anything robosuite-based** (robosuite, LIBERO). Its
+    mujoco-py shim asserts `joint_type in (mjJNT_HINGE, mjJNT_SLIDE)`, and in
+    3.12 the enum's *reflected* comparison with `numpy.int32` began returning
+    False, so the membership test fails and every env dies in
+    `_setup_references`. Bisected: fine through 3.11.0, broken at 3.12.0.
+
+11. **Never install LIBERO beside the robosuite backend.** LIBERO pins
+    `robosuite==1.4.0`, whose controller API is not the 1.5 one
+    `benchmarks/robosuite_env.py` uses. `registry.installed()` version-checks
+    for this so it reports unavailable instead of failing at `make()`.
+
+12. **Clear `MUJOCO_GL` when it holds a backend gymnasium can't use.**
+    Importing robosuite sets `MUJOCO_GL=cgl` on macOS; gymnasium only knows
+    glfw/egl/osmesa and dies with `KeyError: 'cgl'`. Only shows up when two
+    families share a process -- which the test suite does.
+
+13. **Gripper close signs differ per family and were measured**: robosuite +1,
+    Meta-World +1, Fetch **-1**, LIBERO +1. A wrong sign makes the task quietly
+    unsolvable while looking like bad teleop. See BENCHMARKS.md for evidence.
 
 ## Gamepad notes
 
