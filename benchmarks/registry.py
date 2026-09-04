@@ -1,10 +1,21 @@
 """Which benchmark environments this rig can drive, and whether they're installed.
 
-Everything here is probed, not assumed: `available()` imports nothing until you
-ask, and a family that is not installed reports the pip command that would fix
-it instead of raising.
+Two things get switched at runtime and they are not the same thing:
 
-Gripper conventions differ between families and were each measured against the
+    suite   which benchmark is running -- native, robosuite, LIBERO, RoboCasa.
+            A different robot, a different simulator wrapper, a different
+            observation width. Cycled with `cycle_suite`.
+    task    which setting inside that suite -- Lift, Stack, PickPlaceCan.
+            Same robot, same adapter, different scene. Cycled with `cycle_task`.
+
+An *environment spec* names both: "robosuite:Lift" is a suite and a task, and a
+bare "robosuite" means that suite's first task.
+
+Everything here is probed, not assumed: nothing is imported until you ask, and a
+suite that is not installed reports the command that would fix it rather than
+raising.
+
+Gripper conventions differ between suites and were each measured against the
 simulator rather than taken from documentation:
 
     robosuite    action[-1] = +1  closes   (Panda finger joints 0.042 -> 0.001)
@@ -23,7 +34,7 @@ NATIVE = "native"
 
 
 @dataclass(frozen=True)
-class Family:
+class Suite:
     name: str
     module: str                 # import name used to probe installation
     install: str                # pip command that provides it
@@ -45,6 +56,35 @@ def _native(task, seed):
 def _robosuite(task, seed):
     from .robosuite_env import RobosuiteEnv
     return RobosuiteEnv(task=task or "Lift", seed=seed)
+
+
+# RoboCasa's mobile Panda was renamed between releases (v0.1 PandaMobile,
+# v0.2 PandaOmron) and we cannot probe which one is present without importing
+# it, so the factory tries them in order rather than pinning a guess.
+ROBOCASA_ROBOTS = ("PandaOmron", "PandaMobile")
+
+
+def _robocasa(task, seed):
+    """RoboCasa kitchens, which are robosuite envs once robocasa is imported.
+
+    Importing robocasa is what registers its environments in robosuite's
+    registry, so the adapter underneath is the robosuite one -- same OSC
+    controller, same Cartesian delta, same gripper sign. Untested here: the
+    package is not installed on this machine, so treat the robot names and the
+    default task as the documented starting point, not as measured facts.
+    """
+    import robocasa  # noqa: F401  (registers the kitchen envs with robosuite)
+    from .robosuite_env import RobosuiteEnv
+
+    last = None
+    for robot in ROBOCASA_ROBOTS:
+        try:
+            return RobosuiteEnv(task=task or "PnPCounterToCab", robot=robot,
+                                seed=seed, camera=None)
+        except Exception as exc:        # wrong robot name for this release
+            last = exc
+    raise SystemExit(f"robocasa built no environment with any of "
+                     f"{', '.join(ROBOCASA_ROBOTS)}: {last}")
 
 
 def _metaworld(task, seed):
@@ -70,37 +110,48 @@ def _fetch(task, seed):
     return GymEnv(task or "FetchPickAndPlace-v4", FETCH, seed=seed)
 
 
-FAMILIES = {
-    NATIVE: Family(
+SUITES = {
+    NATIVE: Suite(
         NATIVE, "game", "(built in)",
         "Skillcrane's own 6-DoF arm and cube.",
         ("default",), _native),
-    "robosuite": Family(
+    "robosuite": Suite(
         "robosuite", "robosuite", "pip install -r requirements-benchmarks.txt",
         "ARISE robosuite manipulation suite (Panda, OSC control).",
         ("Lift", "Stack", "PickPlaceCan", "Door", "NutAssemblyRound"), _robosuite,
         note="Needs mujoco<3.12 and robosuite>=1.5 -- see BENCHMARKS.md.",
         min_version=(1, 5)),
-    "metaworld": Family(
+    "robocasa": Suite(
+        "robocasa", "robocasa",
+        "pip install git+https://github.com/robocasa/robocasa.git "
+        "&& python -m robocasa.scripts.download_kitchen_assets",
+        "RoboCasa kitchen tasks (robosuite envs, mobile Panda).",
+        ("PnPCounterToCab", "PnPCabToCounter", "OpenSingleDoor", "CloseDrawer",
+         "TurnOnStove"), _robocasa,
+        note="Built on robosuite, so the same mujoco<3.12 rule applies, and it "
+             "needs its kitchen assets downloaded once. Not installed here: "
+             "the adapter path is untested.",
+    ),
+    "metaworld": Suite(
         "metaworld", "metaworld", "pip install -r requirements-benchmarks.txt",
         "Meta-World 50-task manipulation benchmark (Sawyer).",
         ("pick-place-v3", "reach-v3", "push-v3", "door-open-v3", "drawer-close-v3"),
         _metaworld, note="No wrist joint: dyaw is recorded but does nothing."),
-    "fetch": Family(
+    "fetch": Suite(
         "fetch", "gymnasium_robotics", "pip install -r requirements-benchmarks.txt",
         "Gymnasium-Robotics Fetch tasks (7-DoF mobile manipulator).",
         ("FetchPickAndPlace-v4", "FetchReach-v4", "FetchPush-v4", "FetchSlide-v4"),
         _fetch, note="No wrist joint: dyaw is recorded but does nothing."),
     # Known, verified to install and run, but not teleoperable through this
     # rig -- recorded here so the next person does not re-derive it.
-    "aloha": Family(
+    "aloha": Suite(
         "aloha", "gym_aloha", "pip install gym-aloha",
         "LeRobot's bimanual ALOHA sim.",
         ("AlohaTransferCube-v0", "AlohaInsertion-v0"), None,
         note="14-D bimanual joint-position control, not a Cartesian delta -- "
              "one gamepad cannot drive it without an IK layer.",
         supported=False),
-    "libero": Family(
+    "libero": Suite(
         "libero", "libero", "conda env create -f environment-libero.yml",
         "LIBERO lifelong-learning benchmark (130 tasks, HF LeRobot build).",
         ("libero_spatial", "libero_object", "libero_goal", "libero_90",
@@ -122,18 +173,18 @@ def _version(dist: str) -> tuple:
     return tuple(parts)
 
 
-def installed(family: str) -> bool:
-    """True only if the family is importable *and* new enough for the adapter.
+def installed(suite: str) -> bool:
+    """True only if the suite is importable *and* new enough for the adapter.
 
     The version check is not pedantry: LIBERO pins robosuite==1.4.0, whose
     controller API is not the 1.5 one this project's adapter uses. Inside a
     LIBERO environment robosuite imports fine and then fails at make() time, so
     presence alone is the wrong question.
     """
-    fam = FAMILIES.get(family)
+    fam = SUITES.get(suite)
     if fam is None:
         return False
-    if family == NATIVE:
+    if suite == NATIVE:
         return True
     if importlib.util.find_spec(fam.module) is None:
         return False
@@ -143,67 +194,74 @@ def installed(family: str) -> bool:
 
 
 def parse(spec: str):
-    """"robosuite:Lift" -> ("robosuite", "Lift"). Bare name -> (name, None)."""
-    family, _, task = (spec or NATIVE).partition(":")
-    return family, (task or None)
+    """Split an environment spec into its two halves.
+
+    "robosuite:Lift" -> ("robosuite", "Lift"); a bare suite name -> (name, None),
+    meaning "that suite's default task".
+    """
+    suite, _, task = (spec or NATIVE).partition(":")
+    return suite, (task or None)
 
 
 def make(spec: str = NATIVE, seed: int = 0):
-    """Build a TeleopEnv, with a useful message when the family is missing."""
-    family, task = parse(spec)
-    fam = FAMILIES.get(family)
+    """Build a TeleopEnv from a "suite:task" spec, or explain what is missing."""
+    suite, task = parse(spec)
+    fam = SUITES.get(suite)
     if fam is None:
         raise SystemExit(f"unknown environment {spec!r}. Try --list-envs.")
     if not fam.supported:
-        raise SystemExit(f"{family} is not teleoperable here: {fam.note}")
-    if not installed(family):
+        raise SystemExit(f"{suite} is not teleoperable here: {fam.note}")
+    if not installed(suite):
         have = _version(fam.dist or fam.module)
-        why = (f"{family} {'.'.join(map(str, have))} is too old for this adapter"
-               if have else f"{family} is not installed")
+        why = (f"{suite} {'.'.join(map(str, have))} is too old for this adapter"
+               if have else f"{suite} is not installed")
         raise SystemExit(f"{why}.\n  {fam.install}\n  {fam.note}".rstrip())
     return fam.factory(task, seed)
 
 
-def switchable() -> tuple:
-    """Families that can be cycled through at runtime, in declaration order.
+def suites() -> tuple:
+    """Benchmark suites that can be cycled through live, in declaration order.
 
     Installed, teleoperable, and actually constructible -- `aloha` is registered
-    but has no factory, so it can never be switched to.
+    but has no factory, so it can never be switched to. A suite you have not
+    installed is simply not in the ring; `describe()` is where you find out it
+    exists and what would install it.
     """
-    return tuple(name for name, fam in FAMILIES.items()
+    return tuple(name for name, fam in SUITES.items()
                  if fam.supported and fam.factory is not None and installed(name))
 
 
-def cycle(spec: str, step: int = 1) -> str:
-    """The next installed family around the ring from `spec`.
+def cycle_suite(spec: str, step: int = 1) -> str:
+    """The next installed *suite* around the ring from `spec`.
 
-    Returns a bare family name: the task resets to that family's default,
-    because a task id from one family means nothing in the next. An unknown or
-    uninstalled current family starts the ring from the beginning, so this can
-    never strand the operator.
+    This is the big switch: a different benchmark, a different robot, a
+    different observation width. Returns a bare suite name, because the task
+    resets to that suite's default -- a task id from one suite means nothing in
+    the next. An unknown or uninstalled current suite starts the ring from the
+    beginning, so this can never strand the operator.
     """
-    ring = switchable()
+    ring = suites()
     if not ring:                    # pragma: no cover - native is always in
         return spec
-    family, _ = parse(spec)
-    if family in ring:
-        return ring[(ring.index(family) + step) % len(ring)]
+    suite, _ = parse(spec)
+    if suite in ring:
+        return ring[(ring.index(suite) + step) % len(ring)]
     return ring[0]
 
 
 def tasks(spec: str) -> tuple:
-    """The task ids registered for `spec`'s family, or () if it has none."""
-    fam = FAMILIES.get(parse(spec)[0])
+    """The task ids registered for `spec`'s suite, or () if it has none."""
+    fam = SUITES.get(parse(spec)[0])
     return fam.tasks if fam else ()
 
 
 def cycle_task(spec: str, step: int = 1) -> str:
-    """The next task *within* the current family, e.g. Lift -> Stack.
+    """The next task *within* the current suite, e.g. Lift -> Stack.
 
-    Switching family is a different move (`cycle`): this one keeps the robot and
-    the adapter and changes the setting, which is what "try the same rig on the
-    next task" means. Families list a few known-good task ids each, and that
-    list is the ring. A family with fewer than two -- the native arm has one
+    Switching suite is the other move (`cycle_suite`): this one keeps the robot
+    and the adapter and changes the setting, which is what "try the same rig on
+    the next task" means. Suites list a few known-good task ids each, and that
+    list is the ring. A suite with fewer than two -- the native arm has one
     scene -- returns `spec` unchanged, so the caller can say so instead of
     silently rebuilding the identical environment.
 
@@ -211,19 +269,19 @@ def cycle_task(spec: str, step: int = 1) -> str:
     is treated as position 0, so stepping forward lands on the second entry
     rather than stranding the operator outside the ring.
     """
-    family, task = parse(spec)
-    fam = FAMILIES.get(family)
+    suite, task = parse(spec)
+    fam = SUITES.get(suite)
     if fam is None or len(fam.tasks) < 2:
         return spec
     ids = list(fam.tasks)
     i = ids.index(task) if task in ids else 0
-    return f"{family}:{ids[(i + step) % len(ids)]}"
+    return f"{suite}:{ids[(i + step) % len(ids)]}"
 
 
 def describe() -> str:
-    """Human-readable table for --list-envs."""
+    """Human-readable table for --list-envs, in the suite / task vocabulary."""
     rows = []
-    for fam in FAMILIES.values():
+    for fam in SUITES.values():
         if not fam.supported:
             mark = "n/a "
         else:
@@ -234,8 +292,17 @@ def describe() -> str:
             rows.append(f"         note : {fam.note}")
         if fam.supported and not installed(fam.name):
             rows.append(f"         get  : {fam.install}")
+    ring = ", ".join(suites())
     return "\n".join(
-        ["Environments  ([ ok ] installed, [  - ] available, [n/a ] not teleoperable)", ""]
+        ["Benchmark suites  ([ ok ] installed, [  - ] available, "
+         "[n/a ] not teleoperable)",
+         "A suite is a benchmark; a task is one setting inside it. "
+         "--env takes SUITE[:TASK].", ""]
         + rows
-        + ["", "Use:  python main.py --env robosuite:Lift",
-           "      [ / ] switches family in a live session, , / . switches task"])
+        + ["",
+           "Use:  python main.py --env robosuite:Lift      one suite, one task",
+           "      python main.py --env libero               that suite's first task",
+           "",
+           "Live:  [ / ]  or Back/Start   next SUITE  (only installed ones: "
+           f"{ring})",
+           "       , / .  or the d-pad    next TASK   (inside the suite you are on)"])

@@ -50,8 +50,9 @@ source. `environment.yml` explains it and how to make the setting stick.
 
 ```sh
 python main.py                  # play
-python main.py --list-envs      # benchmark environments, and what's installed
-python main.py --env robosuite:Lift          # start on a benchmark ([ / ] switches live)
+python main.py --list-envs      # benchmark suites, their tasks, and what's installed
+python main.py --env robosuite:Lift          # a suite and one of its tasks
+python main.py --env libero                  # a suite, on its first task
 python main.py --headless       # scripted pick-and-place, no window, exits 0 on a score
 python main.py --seed 7         # fixed cube spawns
 python main.py --record         # collect the session into runs/ (off unless asked)
@@ -69,9 +70,11 @@ python gamepad_probe.py         # see what your pad reports, and how it is read
 | rotate wrist | right stick X | `Z` / `C` |
 | gripper | `A` (toggle) | `SPACE` (hold) |
 | orbit camera | `LB` / `RB` | `←` / `→` |
+| zoom camera in / out | `RT` / `LT` | `=` / `-` |
+| camera follow on / off | `B` | `F` |
 | cycle view layout | `X` | `V` |
-| switch task | d-pad ← → | `,` / `.` |
-| switch environment family | `Back` / `Start` | `[` / `]` |
+| switch **task** (inside the suite) | d-pad ← → | `,` / `.` |
+| switch **suite** (the benchmark) | `Back` / `Start` | `[` / `]` |
 | reset round | `Y` | `R` |
 | quit | — | `ESC` |
 
@@ -88,9 +91,9 @@ some models, the Ultimate 2C included, use a switch on the back). Run
 every control next to the raw numbers, and if the layout is raw, prints the
 config block to edit at the top of `input.py`.
 
-**Only the native arm has a camera you can orbit.** The benchmark families
-render from a fixed camera their own adapter picks, so `LB`/`RB` and the arrow
-keys do nothing there — by design, not because the buttons are unmapped.
+**Only the native arm has a camera you can move.** The benchmark suites render
+from fixed cameras their own model defines, so orbit, zoom and follow do nothing
+there — by design, not because the buttons are unmapped.
 
 ## Views
 
@@ -102,7 +105,7 @@ keys do nothing there — by design, not because the buttons are unmapped.
 | `inset` | that view, with the other cameras stacked down the right edge |
 | `grid` | up to four cameras tiled 2×2, all the same size |
 
-The native arm has four: `scene` (the free camera you orbit), `wrist`
+The native arm has four: `scene` (the free camera you drive), `wrist`
 (eye-in-hand, mounted beside the gripper), `front`, and `top`. A benchmark
 offers whatever cameras its own model has — robosuite adds `robot0_eye_in_hand`,
 `frontview` and `birdview` where the task defines them, LIBERO offers the
@@ -115,6 +118,24 @@ Each view is rendered at exactly the panel size it will be drawn into, so
 cameras are declared in the MJCF (`scene.py`), not built in code, so anything
 else that loads the model sees the same views.
 
+### Driving the operator's camera
+
+All three views are framed for *control*, which means close:
+
+- **`scene`** sits 0.9 m out and **follows the work** — the midpoint between the
+  gripper and whatever it is reaching for (the cube, or the drop zone once it is
+  holding one). `RT`/`LT` (or `=`/`-`) dolly between 0.45 m and 2.2 m, `LB`/`RB`
+  orbit, and `B` (or `F`) freezes the follow where it is if you would rather aim
+  the camera yourself.
+- **`front`** and **`top`** are aimed at the middle of the spawn arc rather than
+  at the horizon, and sit as close as they can while still showing every cube
+  spawn and the whole drop zone — `test_m1` checks that against the model's own
+  camera matrices, so pulling them in further fails a test rather than quietly
+  cropping the cube.
+- **`top`** is turned 90°, screen-right being −y. The workspace is wide in y and
+  a view panel is wide too, so putting them on the same axis is worth 0.33 m of
+  camera height for free.
+
 ## Layout
 
 | file | what it holds |
@@ -125,7 +146,7 @@ else that loads the model sees the same views.
 | `input.py` | `GamepadReader`/`KeyboardReader` → `ControlInput` |
 | `render.py` | offscreen render + HUD |
 | `recorder.py` | LeRobot-format episode logging |
-| `benchmarks/` | adapters: robosuite, Meta-World, Fetch, LIBERO |
+| `benchmarks/` | adapters: robosuite, RoboCasa, Meta-World, Fetch, LIBERO |
 | `main.py` | CLI entry point |
 
 `game.py` never imports `input.py` or `render.py`, so the whole sim/rules layer
@@ -135,11 +156,11 @@ runs headless. See `CLAUDE.md` for the physics constraints that must not be
 ## Tests
 
 ```sh
-python -m pytest -q          # 169 tests, ~10 s, no display and no gamepad needed
+python -m pytest -q          # 184 tests, ~10 s, no display and no gamepad needed
 ```
 
 Benchmark tests skip cleanly when the benchmark isn't installed, so a bare
-checkout stays green (169 passed / 13 skipped).
+checkout stays green (184 passed / 17 skipped).
 
 Physics tests assert on numbers — contact count, joint velocity, tracking error,
 cube height, score — and the grasp tests are parametrised over 12 random spawns,
@@ -168,6 +189,13 @@ how LeRobot describes a multi-camera rig.
 Recorded frames are **not** the ones on screen. They are rendered separately at
 a fixed 320×240, because a dataset column has one image shape for the whole
 episode and the operator can change the layout mid-round.
+
+One thing to know before training on them: `scene` is the **operator's** camera,
+so it orbits, zooms and follows the gripper during the episode, and none of that
+is in `observation.state`. That is fine for a human watching a replay and it is
+a moving viewpoint for a policy. `wrist`, `front` and `top` are fixed to the
+robot and the world respectively — record those (`--record-views wrist,front`)
+when you want a stationary camera.
 
 ### Example: collect an episode and read it back
 
@@ -240,14 +268,30 @@ Two things to know before collecting in bulk:
 
 ## Benchmarks
 
-`python main.py --env <family>:<task>` drives an existing benchmark with the same
-rig. Verified working headless on Apple Silicon: **robosuite** (Lift, Stack,
+Two words, kept apart everywhere in this project:
+
+- a **suite** is a benchmark — `native`, `robosuite`, `robocasa`, `metaworld`,
+  `fetch`, `libero`. A different robot, a different wrapper, a different
+  observation width.
+- a **task** is one setting inside a suite — `Lift`, `Stack`, `PickPlaceCan`.
+  Same robot, same adapter, different scene.
+
+`--env` takes both: `--env robosuite:Lift` is a suite and a task, `--env libero`
+is a suite on its first task. `--list-envs` prints every suite, its tasks, and
+whether it is installed.
+
+Verified working headless on Apple Silicon: **robosuite** (Lift, Stack,
 PickPlaceCan, Door), **Meta-World** (50 tasks), **Fetch**, and **LIBERO** (130
-tasks, in its own environment).
+tasks, in its own environment). **RoboCasa** is registered and goes through the
+robosuite adapter — its kitchens are robosuite environments once `robocasa` is
+imported — but it is not installed here, so that path is wiring, not a measured
+result.
 
 ```sh
 pip install -r requirements-benchmarks.txt      # robosuite, Meta-World, Fetch
 CONDA_SUBDIR=osx-arm64 conda env create -f environment-libero.yml   # LIBERO (robosuite 1.4)
+pip install git+https://github.com/robocasa/robocasa.git \
+  && python -m robocasa.scripts.download_kitchen_assets                # RoboCasa
 ```
 
 They need `mujoco<3.12` — see [`BENCHMARKS.md`](BENCHMARKS.md) for why, plus the
@@ -255,18 +299,22 @@ gripper-sign table and two other install landmines.
 
 ### Switching without restarting
 
-Two rings, because they are different moves.
+Two rings, because they are two different moves.
 
-`[` / `]` on the keyboard, or `Back` / `Start` on the pad, cycles the **family**
-— the robot and the adapter. Only families that are actually installed are in
-it; `--list-envs` shows the ring, and one you have not installed is never in it.
-The task resets to that family's default, because a task id from one family
-means nothing in the next.
+`[` / `]` on the keyboard, or `Back` / `Start` on the pad, cycles the **suite**
+— the benchmark itself. Only suites that are actually installed are in the ring,
+which is why a bare checkout says *"native is the only benchmark suite
+installed"* when you press it: install one and it joins the ring. `--list-envs`
+shows what exists and what installs it. The task resets to the new suite's
+default, because a task id from one suite means nothing in the next.
 
 `,` / `.` on the keyboard, or the **d-pad**, cycles the **task** inside the
-family you are on: `Lift` → `Stack` → `PickPlaceCan` → … The ring is that
-family's task list in `--list-envs`. The native arm has one scene, so it says so
-instead of rebuilding the same environment.
+suite you are on: `Lift` → `Stack` → `PickPlaceCan` → … The ring is that suite's
+task list in `--list-envs`. The native arm has one scene, so it says so instead
+of rebuilding the same environment.
+
+The HUD names both, next to the control that changes each:
+`suite native <Back/Start>   task default <d-pad>   views single <X>: scene`.
 
 A switch tears down the old environment and builds the new one, so it is not
 instant; the window title and the HUD both name the environment you are on. If

@@ -22,11 +22,14 @@ GRIP_CLOSE = +1.0          # measured: action[-1]=+1 drives the fingers shut
 MOVE_GAIN = 0.5            # stick -> normalised OSC delta
 ROUND_SECONDS = 90.0
 
-# Extra cameras to offer beside the main one. Which of these exist depends on
-# the task XML and the robot, so they are probed at construction rather than
-# assumed -- `robot0_eye_in_hand` comes from the robot model, the rest from the
-# arena, and a task that lacks one must not leave a dead panel on screen.
-CANDIDATE_VIEWS = ("robot0_eye_in_hand", "frontview", "birdview")
+# Cameras to offer, in the order they should appear. Which of these exist
+# depends on the task XML and the robot, so they are probed at construction
+# rather than assumed -- `robot0_eye_in_hand` comes from the robot model, the
+# rest from the arena, and a task that lacks one must not leave a dead panel on
+# screen. The robocasa names are here because its kitchens have no `agentview`
+# at all, so a suite built on this adapter needs a main view it does have.
+CANDIDATE_VIEWS = ("agentview", "robot0_agentview_center", "robot0_agentview_left",
+                   "robot0_eye_in_hand", "frontview", "birdview")
 
 
 class RobosuiteEnv(TeleopEnv):
@@ -34,6 +37,11 @@ class RobosuiteEnv(TeleopEnv):
 
     def __init__(self, task="Lift", robot="Panda", seed=0, control_freq=20,
                  camera="agentview"):
+        """`camera` is the operator's main view; None means "pick one that works".
+
+        RoboCasa goes through this adapter too, and its kitchens have no
+        `agentview`, so the main view cannot be a constant.
+        """
         import robosuite as suite
         from robosuite.controllers import load_composite_controller_config
 
@@ -44,18 +52,38 @@ class RobosuiteEnv(TeleopEnv):
         self.env = suite.make(
             env_name=task, robots=robot, controller_configs=cfg,
             has_renderer=False, has_offscreen_renderer=True, use_camera_obs=False,
-            camera_names=[camera, *CANDIDATE_VIEWS],
+            # Only the requested camera is declared here. The extra views are
+            # rendered straight off the MuJoCo model further down, which reads
+            # the compiled scene rather than this list -- so naming a camera the
+            # task does not have cannot fail construction.
+            camera_names=[camera] if camera else [],
             control_freq=control_freq, horizon=10 ** 6,
             ignore_done=True, reward_shaping=True,
         )
         self.rng = np.random.default_rng(seed)
-        self.task = f"robosuite {task} with a {robot}."
+        # No suite name in here: RoboCasa comes through this adapter too, and
+        # the spec on the HUD already says which suite is running.
+        self.task = f"{task} with a {robot}."
         self._obs = None
         self.closed = False
         self.reset(full=True)
         self.state_names = tuple(f"obs{i:02d}" for i in range(self.observation().size))
-        self.view_names = (camera,) + tuple(v for v in CANDIDATE_VIEWS
-                                            if self._renderable(v))
+        self.view_names = self._views(camera)
+        self.camera = self.view_names[0]
+
+    def _views(self, camera) -> tuple:
+        """Every candidate this model can actually render, main view first.
+
+        Probed with a 32x32 render each, once, at construction: whether a camera
+        exists is a property of the compiled task XML, and asking it is cheaper
+        than either trusting a table or leaving dead panels on screen.
+        """
+        ordered = ([camera] if camera else []) + [v for v in CANDIDATE_VIEWS
+                                                  if v != camera]
+        found = tuple(v for v in ordered if self._renderable(v))
+        if not found:                         # pragma: no cover - needs the env
+            raise RuntimeError(f"{self.task_name}: none of {ordered} can render")
+        return found
 
     def _renderable(self, view: str) -> bool:
         """Can this model render `view`? Asked once, with a tiny frame."""

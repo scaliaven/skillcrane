@@ -1,4 +1,4 @@
-# Benchmark environments for `python main.py --env <family>:<task>`.
+# Benchmark environments for `python main.py --env <suite>:<task>`.
 # Install ON TOP of requirements.txt, ideally in a separate environment --
 # these pin mujoco and numpy backwards from what the core project uses.
 #

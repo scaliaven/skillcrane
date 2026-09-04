@@ -180,10 +180,23 @@ def build_xml(offwidth: int = OFF_W, offheight: int = OFF_H) -> str:
           type="cylinder" rgba="0.30 0.85 0.55 0.35"/>
 
     <!-- Named here rather than built in code, so every renderer that loads this
-         MJCF -- ours and anyone else's -- sees the same views. -->
-    <camera name="front" pos="0.95 0 0.45" fovy="50"
-            xyaxes="0.12 0.99 0  -0.33 0.04 0.94"/>
-    <camera name="top" pos="0.15 0.10 1.15" fovy="45" xyaxes="1 0 0  0 1 0"/>
+         MJCF -- ours and anyone else's -- sees the same views.
+
+         Both are framed on the *workspace*, not on the room: aimed at
+         (0.13, 0.04, 0.07), roughly the middle of the spawn arc, and no further
+         back than it takes to keep the whole arc in frame. The old framing sat
+         a third of a metre further out and pointed at the horizon, which spent
+         half of every panel on empty floor. test_m1 checks the arc still fits.
+    -->
+    <camera name="front" pos="0.86 -0.14 0.46" fovy="45"
+            xyaxes="0.239 0.971 0  -0.447 0.110 0.888"/>
+    <!-- The top view is turned 90 degrees on purpose: the workspace is wide in
+         y (the spawn arc spans +/-0.36 m) and shallow in x, and a view panel is
+         wide too, so putting y across the screen fits the arc in the long axis.
+         That alone buys the height: 0.82 m instead of the 1.15 m the same arc
+         needs when y runs up the short axis. Screen up is +x (away from the
+         operator), screen right is -y, i.e. the view from behind the arm. -->
+    <camera name="top" pos="0.17 0 0.82" fovy="45" xyaxes="0 -1 0  1 0 0"/>
   </worldbody>
 
   <actuator>

@@ -56,6 +56,22 @@ class TeleopEnv(ABC):
     def orbit(self, degrees: float) -> None:
         """Rotate the camera, where the env has one that can move."""
 
+    def zoom(self, amount: float) -> None:
+        """Dolly the operator's camera in (+) or out (-), in e-folds.
+
+        Multiplicative rather than metres, so one trigger pull feels the same
+        whether the camera is a hand's width from the gripper or across the
+        table. A benchmark with only fixed cameras ignores it.
+        """
+
+    def toggle_follow(self) -> bool:
+        """Follow the gripper, or hold still. Returns the state it is now in.
+
+        False from an env whose camera cannot follow, which is also what the
+        HUD should then say -- the operator gets told nothing happened.
+        """
+        return False
+
     @abstractmethod
     def reset(self, full: bool = False) -> None:
         """Re-home. `full` also restarts the round (score, clock, streak)."""

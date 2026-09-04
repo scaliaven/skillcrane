@@ -118,3 +118,70 @@ def test_fingers_open_wider_than_cube(model):
     assert gap == pytest.approx(scene.FINGER_GAP_OPEN, abs=1e-6)
     assert gap > 2 * scene.CUBE_HALF, \
         f"fingers open to {gap * 1000:.0f} mm, cube is {2 * scene.CUBE_HALF * 1000:.0f} mm"
+
+
+# --- the fixed cameras ------------------------------------------------------
+# They were moved in close for teleoperation, and "close" has a limit: a camera
+# that crops the spawn arc hides the cube the operator is being asked to fetch.
+# Checked against the model's own camera matrices rather than by eye.
+
+# Narrower than any panel the layout actually uses (all of them are about 2:1),
+# so passing here means passing on screen.
+PANEL_ASPECT = 16 / 9
+
+def _sees(model, data, cam: str, point, aspect: float = PANEL_ASPECT) -> bool:
+    """Is `point` inside camera `cam`'s frustum? MuJoCo cameras look down -z."""
+    i = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, cam)
+    rel = np.asarray(point, float) - data.cam_xpos[i]
+    x, y, z = data.cam_xmat[i].reshape(3, 3).T @ rel
+    depth = -z
+    if depth <= 0:
+        return False
+    half_y = math.tan(math.radians(model.cam_fovy[i]) / 2)
+    return abs(y / depth) <= half_y and abs(x / depth) <= half_y * aspect
+
+
+def _workspace_points():
+    """The corners of what the operator has to be able to see."""
+    pts = [(r * math.cos(a), r * math.sin(a), 2 * scene.CUBE_HALF)
+           for r in scene.SPAWN_R
+           for a in (scene.SPAWN_ANGLE[0], 0.0, scene.SPAWN_ANGLE[1])]
+    tx, ty = scene.TARGET_XY                    # the drop zone, rim included
+    pts += [(tx + dx * scene.TARGET_R, ty + dy * scene.TARGET_R, 0.0)
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
+    return pts
+
+
+@pytest.mark.parametrize("cam", ["front", "top"])
+def test_the_fixed_cameras_see_the_whole_workspace(model, cam):
+    """Every spawn position and the whole drop zone, in frame, from both."""
+    d = mujoco.MjData(model)
+    mujoco.mj_forward(model, d)
+    missed = [p for p in _workspace_points() if not _sees(model, d, cam, p)]
+    assert not missed, f"{cam} cannot see {np.round(missed, 3).tolist()}"
+
+
+def test_the_top_camera_is_turned_to_match_the_panel(model):
+    """Why it is only 0.82 m up: the arc is wide in y, and so is a view panel.
+
+    Screen-right is -y, so the +/-0.36 m spawn arc runs along the *long* axis of
+    the panel. Point it the obvious way instead and the same arc needs the
+    camera a third of a metre further back.
+    """
+    i = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "top")
+    right = model.cam_mat0[i].reshape(3, 3).T[0]
+    assert np.allclose(right, [0, -1, 0], atol=1e-6), \
+        "the top view must put world y across the screen, not up it"
+
+    # fovy is the *vertical* angle, so the short axis is what sets the height:
+    # turned the obvious way, the arc would have to fit up the screen instead.
+    half_y = math.tan(math.radians(model.cam_fovy[i]) / 2)
+    widest = scene.SPAWN_R[1] * math.sin(scene.SPAWN_ANGLE[1]) + scene.CUBE_HALF
+    height = model.cam_pos[i][2]
+    assert widest / half_y > height, \
+        (f"turned the other way the arc needs {widest / half_y:.2f} m of height; "
+         f"the camera is at {height:.2f} m")
+
+    d = mujoco.MjData(model)
+    mujoco.mj_forward(model, d)
+    assert _sees(model, d, "top", (0.0, widest, 0.0)), "and across, it fits"

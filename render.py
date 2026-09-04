@@ -54,8 +54,8 @@ def panels(layout: str, n: int) -> list:
     """(x, y, w, h) per view under `layout`, main view first.
 
     Returns at most `n` rects and never more than the layout holds -- 4 in the
-    grid, 1 + 3 insets -- so a family with six cameras simply shows the first
-    few rather than shrinking everything into unreadable tiles.
+    grid, 1 + 3 insets -- so an environment with six cameras simply shows the
+    first few rather than shrinking everything into unreadable tiles.
     """
     n = max(1, int(n))
     full = (0, 0, RENDER_W, RENDER_H)
@@ -144,8 +144,13 @@ class Display:
         pygame.draw.rect(self.screen, (60, 64, 72), rect, 1)
 
     def draw(self, hud, frame=None, scored: bool = False, dt: float = 1 / 60,
-             controls: str = "") -> None:
-        """`frame` is one RGB array, or {view: RGB} for a multi-camera layout."""
+             controls: str = "", status: str = "") -> None:
+        """`frame` is one RGB array, or {view: RGB} for a multi-camera layout.
+
+        `status` says *what* is running (which suite, which task, which layout)
+        and `controls` says how to change it; they are separate lines because
+        they answer separate questions and either one can outgrow the window.
+        """
         if scored:
             self.flash = 0.7
 
@@ -160,14 +165,16 @@ class Display:
         blit(self.f_sm.render(f"streak {hud.streak}  best {hud.best_streak}",
                               True, GREY), (420, 488))
         blit(self.f_sm.render(f"gripper {hud.grip}", True, GREY), (420, 510))
-        # Hint lines use the small font and are trimmed to fit: the controls
-        # line names eight bindings, the task line is a whole sentence, and
-        # either can be longer than the window -- "robosuite:NutAssemblyRound"
-        # is a legitimate environment name.
+        # Three hint lines, in the order an operator needs them: what is
+        # running, how to change it, and what the environment says it wants.
+        # All are trimmed rather than allowed to run off the edge -- the
+        # controls line names ten bindings and "robosuite:NutAssemblyRound" is
+        # a legitimate environment name.
+        self._hint(status, 542, GREY)
         self._hint(controls or "L-stick move  R-stick lift/rotate  A grip  "
-                               "LB/RB camera  Y reset", 548, DIM)
+                               "LB/RB camera  Y reset", 566, DIM)
         self._hint(f"{hud.task}   ee {np.round(hud.ee, 2)}   "
-                   f"obj {np.round(hud.obj, 2)}", 572, FAINT)
+                   f"obj {np.round(hud.obj, 2)}", 590, FAINT)
         if hud.time_left <= 0:
             blit(self.f_big.render("TIME  -  press R", True, RED), (620, 480))
 

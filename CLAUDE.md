@@ -28,7 +28,9 @@ skillcrane/
                   (SDL standard layout when available, raw indices otherwise)
   render.py       offscreen render + HUD drawing + multi-view layouts
   recorder.py     LeRobot-format episode logging (optional deps)
-  benchmarks/     adapters: native, robosuite, Meta-World, Fetch, LIBERO
+  benchmarks/     adapters: native, robosuite, RoboCasa, Meta-World, Fetch,
+                  LIBERO. A *suite* is a benchmark, a *task* is a setting in
+                  one; registry.py cycles them separately.
   main.py         CLI entry: --headless, --seed, --record, --record-views,
                   --env, --list-envs
   tests/
@@ -48,6 +50,29 @@ Note the dependency direction: `game.py` never imports `input.py`. `Game.step`
 takes plain world-frame floats, and the camera-relative rotation lives in
 `ControlInput.world_xy` on the input side.
 
+### Suite vs task -- keep them apart
+
+Two different switches, and conflating them is how the rig gets confusing:
+
+- **suite** = which benchmark (`native`, `robosuite`, `robocasa`, `metaworld`,
+  `fetch`, `libero`). Different robot, different adapter, different observation
+  width. `registry.cycle_suite`, bound to `Back`/`Start` and `[` / `]`. The ring
+  holds only *installed* suites, so on a bare checkout it is one entry long and
+  says so rather than looking broken.
+- **task** = one setting inside a suite (`Lift` -> `Stack`). Same robot, same
+  adapter. `registry.cycle_task`, bound to the d-pad and `,` / `.`.
+
+An *environment spec* names both: `robosuite:Lift`. `--env` takes one, `parse()`
+splits it, and the HUD prints each next to the control that changes it. The word
+"family" used to do duty for both and was removed; `ControlInput.suite`,
+`SUITES`, `suites()` and `cycle_suite()` are the current names.
+
+RoboCasa is registered but **untested here** -- it is not installed on this
+machine. It reuses `robosuite_env.py` (importing `robocasa` registers its
+kitchens in robosuite's registry); the robot name and default task are read off
+its docs, not measured, and the factory tries `PandaOmron` then `PandaMobile`
+because the name changed between releases.
+
 ### Cameras and views
 
 An env declares `view_names` (operator's view first) and answers
@@ -55,7 +80,7 @@ An env declares `view_names` (operator's view first) and answers
 rects, and asks for exactly those sizes -- nothing is rendered large and then
 thrown away, and a one-camera env simply gets one full-width panel.
 
-Two settled details behind the native cameras:
+Settled details behind the native cameras:
 
 - **They live in the MJCF, not in code.** `scene.CAMERAS` names them; anything
   that loads the model gets the same views. Only the orbiting `scene` camera is
@@ -64,6 +89,25 @@ Two settled details behind the native cameras:
   `NativeEnv` re-enables it for the operator's view only. In the wrist camera,
   5 cm away, that 8 mm dot covers exactly the object being grasped -- it would
   be in the middle of every recorded eye-in-hand frame.
+- **They are framed for control, and "how close" has a test.** The fixed cameras
+  aim at the middle of the spawn arc, not at the horizon, and sit as close as
+  they can while still seeing every spawn position and the whole drop zone.
+  `test_m1` checks that against the model's own camera matrices at a 16:9 panel
+  (narrower than any layout actually uses), so pulling them in further fails a
+  test instead of quietly cropping the cube.
+- **The `top` camera is turned 90 degrees** (`xyaxes="0 -1 0  1 0 0"`), so world
+  y runs across the panel. The workspace is wide in y (+/-0.36 m of spawn arc)
+  and shallow in x, and a view panel is wide too; matching those axes is worth
+  0.33 m of camera height -- 0.82 m instead of 1.15 m for the same coverage.
+- **The operator's `scene` camera follows the work and zooms.** It sits 0.90 m
+  out (was 1.35 m, where a 48 mm cube was 30 px of a 900 px panel) and eases its
+  lookat onto the midpoint of gripper-and-goal with a 0.3 s time constant: the
+  thing being judged is a *gap*, so centring the midpoint keeps both ends of it
+  on screen. `zoom()` is multiplicative and clamped to 0.45-2.2 m; `B` / `F`
+  freezes the follow. `track()` is keyed on **sim time**, not on render calls --
+  recording renders the same tick twice (window panels, then the dataset's own
+  fixed-size views) and a per-render lerp would move at whatever rate the layout
+  happened to demand.
 
 Recording is deliberately decoupled from the window: `--record-views` renders
 its own frames at a fixed 320x240, because a dataset column has one image shape
@@ -130,18 +174,18 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 
 | # | Milestone | Test | Status |
 |---|-----------|------|--------|
-| M1 | scene + kinematics | `test_m1_scene_kin.py` | 12 passed |
+| M1 | scene + kinematics | `test_m1_scene_kin.py` | 15 passed |
 | M2 | stable tracking | `test_m2_tracking.py` | 6 passed |
 | M3 | grasping (12 seeds) | `test_m3_grasp.py` | 19 passed |
 | M4 | game rules | `test_m4_rules.py` | 17 passed |
-| M5 | input layer | `test_m5_input.py` | 48 passed |
+| M5 | input layer | `test_m5_input.py` | 54 passed |
 | M6 | render + HUD | `test_m6_render.py` | 14 passed |
 | M7 | recording (stretch) | `test_m7_record.py` | 17 passed |
-| M8 | benchmark adapters | `test_benchmarks.py` | 32 passed, 13 skipped |
+| M8 | benchmark adapters | `test_benchmarks.py` | 38 passed, 17 skipped |
 | — | hard rule | `test_no_pygame.py` | 4 passed |
 
-Totals: **169 passed / 13 skipped** with no benchmarks installed. The counts
-with the benchmark families installed have not been re-measured since the
+Totals: **184 passed / 17 skipped** with no benchmarks installed. The counts
+with the benchmark suites installed have not been re-measured since the
 switching work.
 
 ## Benchmark constraints
@@ -160,9 +204,9 @@ switching work.
 12. **Clear `MUJOCO_GL` when it holds a backend gymnasium can't use.**
     Importing robosuite sets `MUJOCO_GL=cgl` on macOS; gymnasium only knows
     glfw/egl/osmesa and dies with `KeyError: 'cgl'`. Only shows up when two
-    families share a process -- which the test suite does.
+    suites share a process -- which the test suite does.
 
-13. **Gripper close signs differ per family and were measured**: robosuite +1,
+13. **Gripper close signs differ per suite and were measured**: robosuite +1,
     Meta-World +1, Fetch **-1**, LIBERO +1. A wrong sign makes the task quietly
     unsolvable while looking like bad teleop. See BENCHMARKS.md for evidence.
 
@@ -182,10 +226,16 @@ role (`"grip"`, `"cam_l"`), so neither table leaks into the read path.
 `gamepad_probe.py` reports which path is live, what `input.py` makes of each
 control next to the raw numbers, and the block to edit if the layout is raw.
 
-Roles as bound: A grip, X view layout, Y reset, LB/RB orbit, d-pad task,
-Back/Start environment family. The d-pad used to double as orbit; it steps the
-task now, and the bumpers keep the camera. The d-pad is two buttons under SDL
-and a *hat* on a raw pad, which is why `_dpad_x()` reads it separately.
+Roles as bound: A grip, B camera follow, X view layout, Y reset, LB/RB orbit,
+LT/RT zoom, d-pad **task**, Back/Start **suite**. The d-pad used to double as
+orbit; it steps the task now, and the bumpers keep the camera. The d-pad is two
+buttons under SDL and a *hat* on a raw pad, which is why `_dpad_x()` reads it
+separately.
+
+**Triggers are read one-sided** (`max(0, value)`, `_trigger()`). SDL reports a
+released trigger as 0, but a raw pad usually rests at -1 and runs to +1; flooring
+costs a raw pad the bottom half of its travel and buys the thing that matters --
+a pad resting at -1 does not zoom the camera out for the whole session.
 
 Pairing modes still matter for the fallback: Apple (hold Start+A on power-on),
 D-input (Start+B); XInput is a Windows API and is useless here. Some models,

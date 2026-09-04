@@ -8,6 +8,8 @@ main.py, which is what keeps them honest against each other.
 The mujoco.Renderer lives *here*, not in game.py -- creating one needs a GL
 context, and game.py must stay runnable with no display.
 """
+import math
+
 import numpy as np
 
 import scene
@@ -19,7 +21,19 @@ STATE_NAMES = tuple([f"j{i}" for i in range(1, 7)] + ["grip", "cube_x", "cube_y"
 TASK = "Pick up the cube and place it in the target zone."
 
 MAIN_VIEW = "scene"                     # the free camera the operator orbits
-HOME_CAM = (1.35, -22.0, 130.0)         # distance, elevation, azimuth
+# Distance, elevation, azimuth. 0.90 m rather than the 1.35 m this started at:
+# the whole point of the operator's view is the 48 mm cube and the 68 mm gripper
+# around it, and at 1.35 m the cube was 30 px of a 900 px panel. The camera
+# follows the work (see `_focus`), so it can sit this close without the arm
+# driving out of frame.
+HOME_CAM = (0.90, -30.0, 130.0)
+ZOOM_RANGE = (0.45, 2.20)               # metres of camera distance, hard limits
+ZOOM_RATE = 1.2                         # e-folds per second at full trigger
+                                        # (~0.6 s to halve the distance)
+# Seconds for the camera to close most of the way onto a moved focus point. Long
+# enough that a flicked stick does not whip the view, short enough that the
+# gripper never leaves the middle of the panel during a reach.
+FOLLOW_TAU = 0.30
 
 
 class NativeEnv(TeleopEnv):
@@ -33,6 +47,8 @@ class NativeEnv(TeleopEnv):
         self._renderers = {}            # (w, h) -> mujoco.Renderer
         self.cam = None                 # free camera, built on the first render
         self._opt = None                # scene options for the main view
+        self.following = True           # main view tracks the work by default
+        self._cam_t = None              # sim time the camera was last advanced
 
     def reset(self, full: bool = False) -> None:
         self.game.reset(full=full)
@@ -62,22 +78,35 @@ class NativeEnv(TeleopEnv):
         key = (width, height)
         r = self._renderers.get(key)
         if r is None:
+            self._ensure_cam()
             r = self._renderers[key] = mujoco.Renderer(self.game.m, height=height,
                                                        width=width)
-            if self.cam is None:
-                self.cam = mujoco.MjvCamera()
-                self.cam.lookat[:] = [0.10, 0.10, 0.15]
-                (self.cam.distance, self.cam.elevation,
-                 self.cam.azimuth) = HOME_CAM
-                # The TCP marker is site group 3, which MuJoCo hides by default.
-                # Show it in the operator's view only -- see scene.py.
-                self._opt = mujoco.MjvOption()
-                self._opt.sitegroup[3] = 1
         return r
+
+    def _ensure_cam(self):
+        """Build the free camera and its scene options, once.
+
+        Separate from `_renderer` because a camera is not a GL object: zooming,
+        orbiting and following all work on a machine that cannot open a
+        framebuffer, and so do their tests.
+        """
+        import mujoco
+        if self.cam is None:
+            self.cam = mujoco.MjvCamera()
+            # Opens already pointed at the work rather than easing onto it over
+            # the first half second of the round.
+            self.cam.lookat[:] = self._focus()
+            (self.cam.distance, self.cam.elevation, self.cam.azimuth) = HOME_CAM
+            # The TCP marker is site group 3, which MuJoCo hides by default.
+            # Show it in the operator's view only -- see scene.py.
+            self._opt = mujoco.MjvOption()
+            self._opt.sitegroup[3] = 1
+        return self.cam
 
     def frame(self, width: int, height: int, view: str = MAIN_VIEW):
         r = self._renderer(width, height)
         if view == MAIN_VIEW:
+            self.track()
             r.update_scene(self.game.d, self.cam, self._opt)
         else:
             r.update_scene(self.game.d, view)   # a camera name from the MJCF
@@ -86,10 +115,63 @@ class NativeEnv(TeleopEnv):
     def frames(self, sizes: dict) -> dict:
         return {view: self.frame(*sizes[view], view=view) for view in sizes}
 
+    # -- the operator's camera -----------------------------------------------
+    def _focus(self) -> np.ndarray:
+        """Where the main view should be pointed: halfway into the next move.
+
+        Not the gripper alone. What the operator is judging is a *gap* -- to the
+        cube while reaching for it, to the drop zone while carrying it -- and
+        centring the midpoint keeps both ends of that gap on screen at a
+        distance where either one alone would fill the panel.
+        """
+        ee = np.asarray(self.game.arm.ee(), dtype=float)
+        if self.game.held():
+            other = np.array([*self.game.target, scene.CUBE_HALF * 2])
+        else:
+            other = np.asarray(self.game.cube_pos(), dtype=float)
+        mid = 0.5 * (ee + other)
+        mid[2] = max(mid[2], 0.06)      # never look at a point under the floor
+        return mid
+
+    def track(self) -> None:
+        """Ease the camera's lookat onto `_focus`, once per simulated instant.
+
+        Rendering the main view calls this; it is public so that a test can
+        advance the camera without needing a GL context.
+
+        Keyed on sim time because a frame is rendered more than once per tick
+        when recording (the window's panels, then the dataset's own fixed-size
+        views), and a lerp that ran per *render* would move at whatever rate the
+        layout happened to demand.
+        """
+        self._ensure_cam()
+        now = float(self.game.d.time)
+        was, self._cam_t = self._cam_t, now
+        if not self.following or was is None or now <= was:
+            return
+        dt = min(now - was, 0.1)        # a switch or a reset must not teleport it
+        self.cam.lookat[:] += (self._focus() - self.cam.lookat) * \
+            (1.0 - math.exp(-dt / FOLLOW_TAU))
+
     # The native env is the only one with an orbitable camera of our own.
     def orbit(self, degrees: float) -> None:
-        if self.cam is not None:
-            self.cam.azimuth += degrees
+        self._ensure_cam().azimuth += degrees
+
+    def zoom(self, amount: float) -> None:
+        """Dolly in (+) / out (-). Multiplicative, and clamped to ZOOM_RANGE.
+
+        The clamp is not decoration: inside 0.45 m the near plane starts eating
+        the gripper, and past 2.2 m the cube is the handful of pixels this
+        camera was moved in to avoid.
+        """
+        cam, (lo, hi) = self._ensure_cam(), ZOOM_RANGE
+        cam.distance = float(np.clip(cam.distance * math.exp(-amount * ZOOM_RATE),
+                                     lo, hi))
+
+    def toggle_follow(self) -> bool:
+        """Follow the work, or freeze the lookat where it currently is."""
+        self.following = not self.following
+        return self.following
 
     @property
     def azimuth(self) -> float:

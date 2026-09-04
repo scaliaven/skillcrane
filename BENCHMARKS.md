@@ -1,7 +1,11 @@
 # Benchmark environments
 
-**Yes, it's possible — and four families now work**, driven by the same gamepad,
-HUD and LeRobot recorder as the native arm.
+**Yes, it's possible — and four benchmark suites now work**, driven by the same
+gamepad, HUD and LeRobot recorder as the native arm.
+
+Vocabulary, because the two are switched separately at runtime: a **suite** is a
+benchmark (robosuite, LIBERO, RoboCasa), a **task** is one setting inside it
+(`Lift`, `Stack`). `--env` takes `SUITE[:TASK]`.
 
 Everything below was verified by running it on this machine (macOS 15, Apple
 Silicon, Python 3.12), not read off a README. Where something was only looked up
@@ -15,12 +19,13 @@ python main.py --env metaworld:pick-place-v3 --record runs/
 
 ## Verdict
 
-| family | status | verified by | env |
+| suite | status | verified by | env |
 |---|---|---|---|
 | **robosuite** 1.5.2 | ported | Lift/Panda, 84×84 offscreen, 20 steps/s | shared |
 | **Meta-World** 3.1.1 | ported | `pick-place-v3`, 4-D action, 480×480 | shared |
 | **Fetch** (Gymnasium-Robotics 1.4.2) | ported | `FetchPickAndPlace-v4`, 4-D action | shared |
 | **LIBERO** 0.1.1 | ported | all 6 suites, 130 tasks, 7-D action | **its own** |
+| **RoboCasa** | registered, **unverified** | nothing — not installed here | shared (robosuite) |
 
 "shared" = installable together via `requirements-benchmarks.txt` or
 `environment-benchmarks.yml`.
@@ -50,10 +55,10 @@ the top five rows were actually executed here.
 
 | package | version | evidence | why not |
 |---|---|---|---|
-| `gym-xarm` | 0.1.1 | PyPI metadata | Pins `mujoco>=2.3.7,<3.0`. Every other family here needs `mujoco>=3.0`, so it is mutually exclusive with all of them — a third environment for one small task suite. |
+| `gym-xarm` | 0.1.1 | PyPI metadata | Pins `mujoco>=2.3.7,<3.0`. Every other suite here needs `mujoco>=3.0`, so it is mutually exclusive with all of them — a third environment for one small task suite. |
 | `gym-pusht` | 0.1.6 | PyPI metadata | 2-D pusher on pymunk, no MuJoCo and **no gripper**. Our contract's gripper bit has nothing to map to. |
 | `panda-gym` | 3.0.7 | PyPI metadata | A different physics engine (PyBullet) for tasks robosuite and Fetch already cover. Not worth a second engine. |
-| `dm-control` | 1.0.45 | PyPI metadata | The interesting near-miss: it wants `mujoco>=3.12.0`, making it the **only** family compatible with this project's current stack. But it is a control/RL suite, not a Cartesian-delta manipulation interface. Best future candidate if the `mujoco<3.12` pin ever becomes painful. |
+| `dm-control` | 1.0.45 | PyPI metadata | The interesting near-miss: it wants `mujoco>=3.12.0`, making it the **only** suite compatible with this project's current stack. But it is a control/RL suite, not a Cartesian-delta manipulation interface. Best future candidate if the `mujoco<3.12` pin ever becomes painful. |
 | `mani-skill` | 3.0.1 | PyPI metadata | SAPIEN does ship `macosx_12_0_universal2` wheels (3.0.2+), so it is not obviously impossible — but its renderer is Vulkan-based and macOS is not a supported target. Not attempted. |
 | `robocasa` | — | not on PyPI | GitHub only, and built on robosuite — which we already support, so it is the **most likely next addition**. Not attempted. |
 | `rlbench` / `pyrep` | — / 3.2.0 | not on PyPI / metadata | Needs a separate CoppeliaSim install and is Linux-centric. |
@@ -127,7 +132,7 @@ Fix: `cmake<4` (what `environment-libero.yml` does) or
 **3. Importing robosuite breaks gymnasium's renderer.** robosuite sets
 `MUJOCO_GL=cgl` on macOS at import time. gymnasium's MuJoCo renderer only knows
 `glfw`/`egl`/`osmesa`, so any Fetch or Meta-World env created afterwards dies
-with `KeyError: 'cgl'`. This only shows up when two families are used in one
+with `KeyError: 'cgl'`. This only shows up when two suites are used in one
 process — which is exactly what the test suite does.
 `benchmarks/gym_env.py` clears the variable when it holds a backend gymnasium
 cannot use.
@@ -137,19 +142,19 @@ cannot use.
 They disagree, and getting one backwards makes a task quietly unsolvable while
 looking like bad teleop:
 
-| family | `action[-1]` that closes | evidence |
+| suite | `action[-1]` that closes | evidence |
 |---|---|---|
 | robosuite (Panda) | **+1** | finger joints 0.0417 → 0.0012 |
 | Meta-World | **+1** | gripper obs 1.000 → 0.296 |
 | Fetch | **−1** | on +1 the fingers *open* 0.000 → 0.100 |
 | LIBERO | **+1** | robosuite Panda gripper |
 
-`tests/test_benchmarks.py::test_gripper_signs_are_documented_per_family` pins
+`tests/test_benchmarks.py::test_gripper_signs_are_documented_per_suite` pins
 these so a refactor can't quietly flip one.
 
 ## Installing
 
-**Shared families** (robosuite, Meta-World, Fetch):
+**Shared suites** (robosuite, Meta-World, Fetch):
 
 ```sh
 pip install -r requirements.txt -r requirements-benchmarks.txt
@@ -172,10 +177,18 @@ script — answer it once up front. `benchmarks/libero_env.py` raises with these
 instructions rather than hanging if the config is missing.
 
 `benchmarks/registry.py` version-checks robosuite, so inside the LIBERO
-environment the `robosuite` family correctly reports as unavailable instead of
+environment the `robosuite` suite correctly reports as unavailable instead of
 failing later at `make()`.
 
-## Per-family notes
+**RoboCasa** (untested here):
+
+```sh
+pip install git+https://github.com/robocasa/robocasa.git
+python -m robocasa.scripts.download_kitchen_assets      # several GB, once
+python main.py --env robocasa:PnPCounterToCab
+```
+
+## Per-suite notes
 
 - **robosuite** — `Lift`, `Stack`, `PickPlaceCan`, `Door`, `NutAssemblyRound`.
   Runs at 20 Hz; `main.py` paces each env by its own `control_dt` rather than
@@ -184,6 +197,14 @@ failing later at `make()`.
   one action schema) but does nothing. That's the benchmark, not a bug.
 - **LIBERO** — task ids take an index: `libero_spatial/3`. Tasks carry a
   natural-language description, which is written into the LeRobot task table.
+- **RoboCasa** — kitchen tasks that *are* robosuite environments: importing
+  `robocasa` registers them in robosuite's registry, so it reuses
+  `benchmarks/robosuite_env.py` whole. Two things are guesses rather than
+  measurements, because the package is not installed on this machine: the mobile
+  robot's name (the factory tries `PandaOmron`, then `PandaMobile`, which is
+  what it was called in v0.1) and the default task. Its kitchens have no
+  `agentview`, which is why the adapter now *probes* for a main camera instead
+  of naming one.
 - **gym-aloha** — installs and steps fine, but it is 14-D bimanual *joint
   position* control, not a Cartesian delta. One gamepad can't drive it without
   an IK layer, so the registry lists it as not teleoperable with the reason
@@ -191,7 +212,7 @@ failing later at `make()`.
 
 ## Recording
 
-Identical for every family. The recorder takes its schema from the environment,
+Identical for every suite. The recorder takes its schema from the environment,
 so observation width and task string follow whatever you're driving:
 
 ```sh

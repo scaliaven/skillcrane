@@ -218,30 +218,42 @@ def test_idle_input_is_all_zero():
     assert ci.grip is False and ci.reset is False
 
 
-# --- environment switching --------------------------------------------------
+# --- switching the benchmark suite ------------------------------------------
+# A *suite* is the benchmark (native, robosuite, LIBERO). A *task* is one
+# setting inside it. They are separate controls and separate fields on purpose.
 
-def test_env_buttons_step_one_environment_each_way():
+def test_suite_buttons_step_one_suite_each_way():
     pad = FakePad()
     r = GamepadReader(pad)
-    assert r.read().env == 0
-    pad.buttons[inp.BTN_ENV_NEXT] = 1
-    assert r.read().env == 1
-    pad.buttons[inp.BTN_ENV_NEXT] = 0
-    pad.buttons[inp.BTN_ENV_PREV] = 1
-    assert r.read().env == -1
+    assert r.read().suite == 0
+    pad.buttons[inp.BTN_SUITE_NEXT] = 1
+    assert r.read().suite == 1
+    pad.buttons[inp.BTN_SUITE_NEXT] = 0
+    pad.buttons[inp.BTN_SUITE_PREV] = 1
+    assert r.read().suite == -1
 
 
-def test_keyboard_brackets_switch_environments():
+def test_keyboard_brackets_switch_suites():
     kb = KeyboardReader()
-    assert kb.read(keys(pygame.K_RIGHTBRACKET)).env == 1
-    assert kb.read(keys(pygame.K_LEFTBRACKET)).env == -1
-    assert kb.read(keys()).env == 0
+    assert kb.read(keys(pygame.K_RIGHTBRACKET)).suite == 1
+    assert kb.read(keys(pygame.K_LEFTBRACKET)).suite == -1
+    assert kb.read(keys()).suite == 0
 
 
-def test_merge_never_steps_more_than_one_environment():
+def test_suite_and_task_are_different_controls():
+    """The whole point of the split: neither key touches the other field."""
+    kb = KeyboardReader()
+    assert kb.read(keys(pygame.K_RIGHTBRACKET)).task == 0
+    assert kb.read(keys(pygame.K_PERIOD)).suite == 0
+    pad = FakePad()
+    pad.buttons[inp.BTN_SUITE_NEXT] = 1
+    assert GamepadReader(pad).read().task == 0
+
+
+def test_merge_never_steps_more_than_one_suite():
     """Both devices asking at once must still move exactly one place."""
-    m = merge(ControlInput(env=1), ControlInput(env=1))
-    assert m.env == 1
+    m = merge(ControlInput(suite=1), ControlInput(suite=1))
+    assert m.suite == 1
 
 
 # --- SDL's standard layout --------------------------------------------------
@@ -313,6 +325,19 @@ def test_controller_x_cycles_the_view_layout():
     assert GamepadReader(FakePad(), ctl=ctl).read().view is True
 
 
+def test_controller_triggers_zoom_and_b_toggles_follow():
+    ctl = FakeController()
+    ctl.axes[pygame.CONTROLLER_AXIS_TRIGGERRIGHT] = 32767
+    assert GamepadReader(FakePad(), ctl=ctl).read().zoom == pytest.approx(1.0)
+    ctl.axes[pygame.CONTROLLER_AXIS_TRIGGERRIGHT] = 0
+    ctl.axes[pygame.CONTROLLER_AXIS_TRIGGERLEFT] = 32767
+    assert GamepadReader(FakePad(), ctl=ctl).read().zoom == pytest.approx(-1.0)
+    ctl.axes[pygame.CONTROLLER_AXIS_TRIGGERLEFT] = 0
+    ctl.buttons[pygame.CONTROLLER_BUTTON_B] = True
+    ci = GamepadReader(FakePad(), ctl=ctl).read()
+    assert ci.follow is True and ci.grip is False, "B must not touch the gripper"
+
+
 def test_standard_flag_says_which_path_is_live():
     assert GamepadReader(FakePad()).standard is False
     assert GamepadReader(FakePad(), ctl=FakeController()).standard is True
@@ -351,7 +376,7 @@ def test_a_pad_with_no_hat_does_not_crash():
 
 def test_task_and_view_default_to_doing_nothing():
     ci = GamepadReader(FakePad()).read()
-    assert (ci.env, ci.task, ci.view) == (0, 0, False)
+    assert (ci.suite, ci.task, ci.view) == (0, 0, False)
     assert KeyboardReader().read(keys()).task == 0
 
 
@@ -376,3 +401,41 @@ def test_the_view_button_is_not_the_grip_button():
     assert inp.BTN_VIEW != inp.BTN_GRIP
     assert inp.ROLE_BUTTON["view"] not in (inp.ROLE_BUTTON["grip"],
                                            inp.ROLE_BUTTON["reset"])
+
+
+# --- camera zoom and follow -------------------------------------------------
+
+def test_keyboard_zooms_and_toggles_follow():
+    r = KeyboardReader()
+    assert r.read(keys(pygame.K_EQUALS)).zoom == pytest.approx(1.0)
+    assert r.read(keys(pygame.K_MINUS)).zoom == pytest.approx(-1.0)
+    assert r.read(keys()).zoom == 0.0
+    assert r.read(keys(pygame.K_f)).follow is True
+    assert r.read(keys()).follow is False
+
+
+def test_raw_triggers_zoom_and_a_pad_resting_at_minus_one_does_not():
+    """The reason triggers are floored at 0 rather than rescaled.
+
+    Plenty of raw pads report a released trigger as -1. Rescaling that into the
+    zoom would dolly the camera out for the whole session with nothing pressed.
+    """
+    def with_triggers(lt, rt):
+        axes = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        axes[inp.AX_LT], axes[inp.AX_RT] = lt, rt
+        return GamepadReader(FakePad(axes=axes)).read()
+
+    assert with_triggers(0.0, 1.0).zoom == pytest.approx(1.0)
+    assert with_triggers(1.0, 0.0).zoom == pytest.approx(-1.0)
+    assert with_triggers(-1.0, -1.0).zoom == 0.0, "a resting trigger is not a zoom"
+
+
+def test_a_four_axis_pad_has_no_triggers_and_does_not_crash():
+    """The fallback table names axes 4 and 5; plenty of pads have neither."""
+    assert GamepadReader(FakePad()).read().zoom == 0.0
+
+
+def test_zoom_merges_and_clips_like_any_other_axis():
+    assert merge(ControlInput(zoom=0.8), ControlInput(zoom=0.8)).zoom == \
+        pytest.approx(1.0)
+    assert merge(ControlInput(follow=True), ControlInput()).follow is True

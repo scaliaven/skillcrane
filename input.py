@@ -37,17 +37,21 @@ if pygame is not None:
     ROLE_AXIS = {
         "lx": pygame.CONTROLLER_AXIS_LEFTX, "ly": pygame.CONTROLLER_AXIS_LEFTY,
         "rx": pygame.CONTROLLER_AXIS_RIGHTX, "ry": pygame.CONTROLLER_AXIS_RIGHTY,
+        # Triggers, read as one-sided: zoom out on LT, in on RT.
+        "zoom_out": pygame.CONTROLLER_AXIS_TRIGGERLEFT,
+        "zoom_in": pygame.CONTROLLER_AXIS_TRIGGERRIGHT,
     }
     ROLE_BUTTON = {
         "grip": pygame.CONTROLLER_BUTTON_A,
         "reset": pygame.CONTROLLER_BUTTON_Y,
         "view": pygame.CONTROLLER_BUTTON_X,
+        "follow": pygame.CONTROLLER_BUTTON_B,
         "cam_l": pygame.CONTROLLER_BUTTON_LEFTSHOULDER,
         "cam_r": pygame.CONTROLLER_BUTTON_RIGHTSHOULDER,
         "dpad_l": pygame.CONTROLLER_BUTTON_DPAD_LEFT,
         "dpad_r": pygame.CONTROLLER_BUTTON_DPAD_RIGHT,
-        "env_prev": pygame.CONTROLLER_BUTTON_BACK,
-        "env_next": pygame.CONTROLLER_BUTTON_START,
+        "suite_prev": pygame.CONTROLLER_BUTTON_BACK,
+        "suite_next": pygame.CONTROLLER_BUTTON_START,
     }
 else:                           # pragma: no cover - no pygame, no real device
     ROLE_AXIS, ROLE_BUTTON = {}, {}
@@ -56,13 +60,15 @@ else:                           # pragma: no cover - no pygame, no real device
 #       mode (Start+A = Apple, Start+B = D-input; XInput is a Windows API and
 #       is useless on macOS), so these are a starting point, not a promise.
 AX_LX, AX_LY, AX_RX, AX_RY = 0, 1, 2, 3
-BTN_GRIP, BTN_VIEW, BTN_RESET, BTN_CAM_L, BTN_CAM_R = 0, 2, 3, 4, 5
-BTN_ENV_PREV, BTN_ENV_NEXT = 6, 7          # usually Select/Back and Start
+AX_LT, AX_RT = 4, 5                        # triggers, if the pad reports them
+BTN_GRIP, BTN_FOLLOW, BTN_VIEW, BTN_RESET, BTN_CAM_L, BTN_CAM_R = 0, 1, 2, 3, 4, 5
+BTN_SUITE_PREV, BTN_SUITE_NEXT = 6, 7      # usually Select/Back and Start
 
-RAW_AXIS = {"lx": AX_LX, "ly": AX_LY, "rx": AX_RX, "ry": AX_RY}
+RAW_AXIS = {"lx": AX_LX, "ly": AX_LY, "rx": AX_RX, "ry": AX_RY,
+            "zoom_out": AX_LT, "zoom_in": AX_RT}
 RAW_BUTTON = {"grip": BTN_GRIP, "reset": BTN_RESET, "view": BTN_VIEW,
-              "cam_l": BTN_CAM_L, "cam_r": BTN_CAM_R,
-              "env_prev": BTN_ENV_PREV, "env_next": BTN_ENV_NEXT}
+              "follow": BTN_FOLLOW, "cam_l": BTN_CAM_L, "cam_r": BTN_CAM_R,
+              "suite_prev": BTN_SUITE_PREV, "suite_next": BTN_SUITE_NEXT}
 # The d-pad is a hat on a raw pad, not two buttons, so it is read separately.
 
 DEADZONE = 0.15
@@ -84,8 +90,13 @@ class ControlInput:
     grip: bool = False          # True = closed
     reset: bool = False
     cam: float = 0.0            # camera orbit, -1..1
-    env: int = 0                # -1 previous environment family, +1 next, 0 stay
-    task: int = 0               # -1 previous task in this family, +1 next, 0 stay
+    zoom: float = 0.0           # camera dolly, +1 in / -1 out
+    follow: bool = False        # toggle the camera following the work
+    # Two different moves, and the operator has to be able to tell them apart:
+    # `suite` changes which benchmark is running (native -> robosuite -> ...),
+    # `task` changes the setting inside the one already running (Lift -> Stack).
+    suite: int = 0              # -1 previous benchmark suite, +1 next, 0 stay
+    task: int = 0               # -1 previous task in this suite, +1 next, 0 stay
     view: bool = False          # cycle the view layout (single / inset / grid)
 
     def world_xy(self, cam_az: float) -> tuple:
@@ -108,9 +119,10 @@ class ControlInput:
             mz=float(np.clip(self.mz, -1, 1)), dyaw=float(np.clip(self.dyaw, -1, 1)),
             grip=self.grip, reset=self.reset,
             cam=float(np.clip(self.cam, -1, 1)),
-            # env and task are directions, not magnitudes: two devices asking
-            # at once must still step exactly one environment, one task.
-            env=int(np.sign(self.env)), task=int(np.sign(self.task)),
+            zoom=float(np.clip(self.zoom, -1, 1)), follow=bool(self.follow),
+            # suite and task are directions, not magnitudes: two devices asking
+            # at once must still step exactly one suite, one task.
+            suite=int(np.sign(self.suite)), task=int(np.sign(self.task)),
             view=bool(self.view))
 
 
@@ -129,7 +141,8 @@ def merge(a: ControlInput, b: ControlInput) -> ControlInput:
     """
     return ControlInput(a.mx + b.mx, a.my + b.my, a.mz + b.mz, a.dyaw + b.dyaw,
                         a.grip or b.grip, a.reset or b.reset, a.cam + b.cam,
-                        a.env or b.env, a.task or b.task,
+                        a.zoom + b.zoom, a.follow or b.follow,
+                        a.suite or b.suite, a.task or b.task,
                         a.view or b.view).clipped()
 
 
@@ -190,6 +203,16 @@ class GamepadReader:
             return False
         return bool(self.pad.get_button(i)) if i < self.pad.get_numbuttons() else False
 
+    def _trigger(self, role: str) -> float:
+        """A trigger as 0..1. Negative readings are floored, not rescaled.
+
+        SDL reports a released trigger as 0 and a pulled one up to 32767, but a
+        raw pad usually rests at -1 and runs to +1. Flooring at 0 costs a raw
+        pad the bottom half of its travel and buys the thing that matters: a pad
+        whose triggers rest at -1 does not silently zoom out forever.
+        """
+        return max(0.0, self._axis(role))
+
     def _dpad_x(self) -> float:
         """D-pad left/right, which steps the task. Buttons under SDL, a hat raw."""
         if self.ctl is not None:
@@ -204,6 +227,7 @@ class GamepadReader:
             self.closed = not self.closed
         self.grip_latch = grip_btn
         cam = float(self._button("cam_r")) - float(self._button("cam_l"))
+        zoom = self._trigger("zoom_in") - self._trigger("zoom_out")
         return ControlInput(
             mx=deadzone(self._axis("lx")),
             my=-deadzone(self._axis("ly")),      # pads report stick-up as negative
@@ -212,7 +236,9 @@ class GamepadReader:
             grip=self.closed,
             reset=self._button("reset"),
             cam=cam,
-            env=int(self._button("env_next")) - int(self._button("env_prev")),
+            zoom=zoom,
+            follow=self._button("follow"),
+            suite=int(self._button("suite_next")) - int(self._button("suite_prev")),
             task=int(self._dpad_x()),
             view=self._button("view"),
         )
@@ -256,7 +282,9 @@ class KeyboardReader:
             grip=bool(pressed[k.K_SPACE]),       # hold to close
             reset=bool(pressed[k.K_r]),
             cam=float(pressed[k.K_RIGHT]) - float(pressed[k.K_LEFT]),
-            env=int(bool(pressed[k.K_RIGHTBRACKET])) - int(bool(pressed[k.K_LEFTBRACKET])),
+            zoom=float(pressed[k.K_EQUALS]) - float(pressed[k.K_MINUS]),
+            follow=bool(pressed[k.K_f]),
+            suite=int(bool(pressed[k.K_RIGHTBRACKET])) - int(bool(pressed[k.K_LEFTBRACKET])),
             task=int(bool(pressed[k.K_PERIOD])) - int(bool(pressed[k.K_COMMA])),
             view=bool(pressed[k.K_v]),
         )

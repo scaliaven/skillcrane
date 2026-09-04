@@ -1,8 +1,9 @@
 """Skillcrane -- teleoperate a robot arm in MuJoCo, and record what you did.
 
     python main.py                        play the native Skillcrane arm
-    python main.py --list-envs            show benchmark environments
-    python main.py --env robosuite:Lift   teleop a benchmark instead
+    python main.py --list-envs            show the benchmark suites and tasks
+    python main.py --env robosuite:Lift   teleop a benchmark suite instead
+    python main.py --env libero           ... its first task
     python main.py --headless             scripted pick-and-place, no window
     python main.py --record               collect the session into runs/
     python main.py --record DIR           ... into DIR instead (LeRobot format)
@@ -11,15 +12,22 @@
 Runs under plain `python`, not `mjpython`: environments render offscreen and
 pygame owns the window, so nothing fights over the macOS main thread.
 
+An environment is a *suite* and a *task*: "robosuite:Lift" is the robosuite
+suite on its Lift task. The two are switched separately while playing, because
+they are different moves -- a suite change swaps the robot and the simulator, a
+task change keeps both and changes the scene.
+
 Controls
     left stick    move gripper horizontally (camera-relative)
     right stick Y raise / lower          right stick X  rotate wrist
     A             toggle gripper          LB / RB       orbit camera
-    X             cycle view layout       d-pad L/R     previous / next task
-    Back / Start  previous / next environment family
+    LT / RT       zoom out / in           B             camera follow on/off
+    X             cycle view layout       d-pad L/R     previous / next TASK
+    Back / Start  previous / next SUITE (benchmark)
     Y             reset the round
     keyboard      WASD move, QE up/down, ZC wrist, SPACE grip, R reset,
-                  arrow keys orbit, V views, , / . task, [ / ] family, ESC quit
+                  arrows orbit, -/= zoom, F follow, V views,
+                  , / . task, [ / ] suite, ESC quit
 """
 import argparse
 import math
@@ -44,7 +52,7 @@ DEFAULT_RECORD_VIEWS = "main"
 class Session:
     """What a switch replaces as a unit: the environment, its name, its logging.
 
-    Switching either the family or the task rebuilds the environment, and both
+    Switching either the suite or the task rebuilds the environment, and both
     change the observation schema -- so the recorder and the set of cameras
     being recorded have to travel with it rather than be tracked separately.
     """
@@ -181,10 +189,15 @@ def _session(env, spec: str, record, views: str) -> Session:
     return Session(env, spec, rec, sizes)
 
 
-def _switch(s: Session, new_spec: str, seed, record, views, nothing: str) -> Session:
+def _switch(s: Session, new_spec: str, seed, record, views, nothing: str,
+            what: str = "env") -> Session:
     """Rebuild the session on `new_spec` without leaving the round.
 
-    A switch changes the observation and action schema -- a different family has
+    `what` is the noun to report it as -- "suite" or "task" -- because from here
+    the two switches are the same operation and only the operator can tell them
+    apart, which they cannot do if both print the same word.
+
+    A switch changes the observation and action schema -- a different suite has
     a different state width, a different task has different objects in it -- so
     a recording in progress is closed out here and the next episode opens under
     the new environment's columns. Otherwise one parquet would carry two
@@ -209,7 +222,9 @@ def _switch(s: Session, new_spec: str, seed, record, views, nothing: str) -> Ses
     if s.rec is not None and len(s.rec):
         print(f"recorded {len(s.rec)} ticks -> {s.rec.save()}")
     s.env.close()
-    print(f"env -> {new_spec}  ({env.task})   views: {', '.join(env.view_names)}")
+    suite, task = benchmarks.parse(new_spec)
+    print(f"{what} -> {new_spec}   suite {suite}  task {task or '(default)'}   "
+          f"views: {', '.join(env.view_names)}")
     return _session(env, new_spec, record, views)
 
 
@@ -225,11 +240,17 @@ def run_game(seed=None, record=None, env_spec: str = "native",
         seed = int(np.random.randint(1 << 30))
     s = _open(env_spec, seed, record, record_views)
     display = Display(caption=f"Skillcrane - {s.spec}")
-    print("environments:", "  ".join(benchmarks.switchable()),
-          "   ([ / ] or Back/Start)")
-    print("tasks:", ", ".join(benchmarks.tasks(s.spec)) or "(one)",
-          "   (, / . or d-pad)")
-    print("views:", ", ".join(s.env.view_names), "   (V or X cycles the layout)")
+    # Spelled out at startup because the two rings are the thing operators get
+    # wrong: the suite ring holds only what is installed, the task ring is
+    # whatever the suite you are on offers.
+    print("suites installed:", "  ".join(benchmarks.suites()),
+          "   ([ / ] or Back/Start switches suite;",
+          "python main.py --list-envs shows the rest)")
+    print("tasks in", benchmarks.parse(s.spec)[0] + ":",
+          ", ".join(benchmarks.tasks(s.spec)) or "(one)",
+          "   (, / . or d-pad switches task)")
+    print("views:", ", ".join(s.env.view_names), "   (V or X cycles the layout,",
+          "-/= or the triggers zoom, F or B toggles camera follow)")
 
     pad = GamepadReader.open()
     if pad:
@@ -244,7 +265,7 @@ def run_game(seed=None, record=None, env_spec: str = "native",
     accum = 0.0
     running = True
     # Switching and cycling step once per press, not once per frame.
-    env_latch = task_latch = view_latch = False
+    suite_latch = task_latch = view_latch = follow_latch = False
     while running:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -257,18 +278,23 @@ def run_game(seed=None, record=None, env_spec: str = "native",
             ci = merge(ci, pad.read())
         if ci.reset:
             s.env.reset(full=True)
-        if ci.env and not env_latch:
-            s = _switch(s, benchmarks.cycle(s.spec, ci.env), seed, record,
-                        record_views,
-                        nothing=f"only {s.spec} is installed -- nothing to switch "
-                                f"to; see python main.py --list-envs")
+        # Two switches, deliberately kept apart: `suite` swaps the benchmark,
+        # `task` swaps the setting inside the one already running.
+        if ci.suite and not suite_latch:
+            s = _switch(s, benchmarks.cycle_suite(s.spec, ci.suite), seed, record,
+                        record_views, what="suite",
+                        nothing=f"{s.spec} is the only benchmark suite installed "
+                                f"-- python main.py --list-envs shows the others "
+                                f"and what installs them")
             display.set_caption(f"Skillcrane - {s.spec}")
             accum = 0.0         # the new env has its own control rate
-        env_latch = bool(ci.env)
+        suite_latch = bool(ci.suite)
         if ci.task and not task_latch:
+            suite = benchmarks.parse(s.spec)[0]
             s = _switch(s, benchmarks.cycle_task(s.spec, ci.task), seed, record,
-                        record_views,
-                        nothing=f"{benchmarks.parse(s.spec)[0]} has one task setting")
+                        record_views, what="task",
+                        nothing=f"the {suite} suite has one task setting; "
+                                f"[ / ] switches suite instead")
             display.set_caption(f"Skillcrane - {s.spec}")
             accum = 0.0
         task_latch = bool(ci.task)
@@ -277,8 +303,13 @@ def run_game(seed=None, record=None, env_spec: str = "native",
             print(f"views -> {layout}: "
                   f"{', '.join(display.view_sizes(s.env.view_names))}")
         view_latch = bool(ci.view)
+        if ci.follow and not follow_latch:
+            print("camera follow", "on" if s.env.toggle_follow() else "off")
+        follow_latch = bool(ci.follow)
         if ci.cam:
             s.env.orbit(ci.cam * CAM_SPEED * frame_dt)
+        if ci.zoom:
+            s.env.zoom(ci.zoom * frame_dt)
 
         dx, dy = ci.world_xy(math.radians(s.env.azimuth))
         # Rendered at exactly the panel sizes the layout will blit into.
@@ -301,12 +332,17 @@ def run_game(seed=None, record=None, env_spec: str = "native",
                           [dx, dy, ci.mz, ci.dyaw, float(ci.grip)],
                           logged if steps == 1 else None)
 
+        suite, task = benchmarks.parse(s.spec)
         display.draw(s.env.hud(), views, scored, frame_dt,
-                     # The layout is obvious from the panels; the environment
-                     # name is not, so that is what the line spends room on.
-                     controls=f"[{s.spec}]  L-stick move  R-stick lift/rot  "
-                              f"A grip  LB/RB cam  X view  d-pad task  "
-                              f"Back/Start env  Y reset")
+                     # Each switchable thing next to the button that switches
+                     # it: which suite, which task inside it, which layout.
+                     # That is the distinction operators kept losing.
+                     status=f"suite {suite} <Back/Start>   "
+                            f"task {task or 'default'} <d-pad>   "
+                            f"views {display.layout} <X>: "
+                            f"{', '.join(display.view_sizes(s.env.view_names))}",
+                     controls="L-stick move   R-stick lift/rot   A grip   "
+                              "LB/RB cam   LT/RT zoom   B follow   Y reset")
         display.tick(60)
 
     if s.rec is not None and len(s.rec):
@@ -318,10 +354,14 @@ def run_game(seed=None, record=None, env_spec: str = "native",
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Skillcrane teleop + data collection")
-    ap.add_argument("--env", default="native", metavar="FAMILY[:TASK]",
-                    help="environment to drive, e.g. robosuite:Lift (see --list-envs)")
-    ap.add_argument("--list-envs", action="store_true",
-                    help="show benchmark environments and whether they are installed")
+    ap.add_argument("--env", default="native", metavar="SUITE[:TASK]",
+                    help="environment to drive: a benchmark suite and one of its "
+                         "tasks, e.g. robosuite:Lift. A bare suite name takes its "
+                         "first task (see --list-envs)")
+    ap.add_argument("--list-envs", "--list-suites", action="store_true",
+                    dest="list_envs",
+                    help="show the benchmark suites, their tasks, and whether "
+                         "each suite is installed")
     ap.add_argument("--headless", action="store_true",
                     help="run a scripted pick-and-place with no window")
     ap.add_argument("--seed", type=int, default=None, help="spawn / task seed")

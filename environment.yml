@@ -9,7 +9,7 @@
 # This is the equivalent of `pip install -r requirements.txt` in a venv, and is
 # what you want for day-to-day work on the arm. It deliberately does NOT pin
 # mujoco below 3.12 or numpy below 2 -- those pins belong to the benchmark
-# families, so they live in environment-benchmarks.yml (robosuite, Meta-World,
+# suites, so they live in environment-benchmarks.yml (robosuite, Meta-World,
 # Fetch) and environment-libero.yml (LIBERO), which are separate environments
 # for the reasons documented in BENCHMARKS.md.
 #

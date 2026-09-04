@@ -48,9 +48,9 @@ if ctl is None:
           "          the buttons you press, edit the config block in input.py.")
 
 # Roles, in the order the HUD lists them, so a mismatch is obvious at a glance.
-ROLES = [("grip", "A"), ("view", "X"), ("reset", "Y"),
+ROLES = [("grip", "A"), ("follow", "B"), ("view", "X"), ("reset", "Y"),
          ("cam_l", "LB"), ("cam_r", "RB"),
-         ("env_prev", "Back/Select"), ("env_next", "Start")]
+         ("suite_prev", "Back/Select"), ("suite_next", "Start")]
 
 reader = inp.GamepadReader(pad, ctl=ctl)
 
@@ -75,8 +75,10 @@ try:
             named.append(f"lift{ci.mz:+.2f} wrist{ci.dyaw:+.2f}")
         if ci.cam:
             named.append(f"camera{ci.cam:+.0f}")
-        if ci.env:
-            named.append(f"env{ci.env:+d}")
+        if ci.zoom:
+            named.append(f"zoom{ci.zoom:+.2f}")
+        if ci.suite:
+            named.append(f"suite{ci.suite:+d}")
         if ci.task:
             named.append(f"task{ci.task:+d}")
         if ci.view:
@@ -102,8 +104,12 @@ except KeyboardInterrupt:
     else:
         print("Map what you saw onto the config block at the top of input.py:")
         print("  AX_LX, AX_LY, AX_RX, AX_RY = 0, 1, 2, 3")
-        print("  BTN_GRIP, BTN_VIEW, BTN_RESET, BTN_CAM_L, BTN_CAM_R = 0, 2, 3, 4, 5")
-        print("  BTN_ENV_PREV, BTN_ENV_NEXT = 6, 7")
+        print("  AX_LT, AX_RT = 4, 5")
+        print("  BTN_GRIP, BTN_FOLLOW, BTN_VIEW, BTN_RESET, BTN_CAM_L, BTN_CAM_R "
+              "= 0, 1, 2, 3, 4, 5")
+        print("  BTN_SUITE_PREV, BTN_SUITE_NEXT = 6, 7")
         print("The d-pad steps the task and is read as a hat, not as buttons.")
+        print("Triggers are read one-sided: a pad that rests at -1 only gets")
+        print("the top half of the travel, which beats zooming out on its own.")
 finally:
     pygame.quit()

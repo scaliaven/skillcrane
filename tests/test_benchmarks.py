@@ -11,10 +11,10 @@ import pytest
 import benchmarks
 import scene
 from benchmarks import Hud, TeleopEnv
-from benchmarks.registry import FAMILIES, NATIVE
+from benchmarks.registry import NATIVE, SUITES
 
-# Families that can be teleoperated, i.e. have a factory.
-DRIVABLE = [n for n, f in FAMILIES.items() if f.supported]
+# Suites that can be teleoperated, i.e. have a factory.
+DRIVABLE = [n for n, f in SUITES.items() if f.supported]
 # LIBERO pins robosuite==1.4 and must live in its own env; never co-installed.
 SHAREABLE = [n for n in DRIVABLE if n not in (NATIVE, "libero")]
 
@@ -25,27 +25,27 @@ def test_native_is_always_available():
     assert benchmarks.installed(NATIVE)
 
 
-def test_parse_splits_family_and_task():
+def test_parse_splits_suite_and_task():
     assert benchmarks.parse("robosuite:Lift") == ("robosuite", "Lift")
     assert benchmarks.parse("native") == ("native", None)
     assert benchmarks.parse("") == ("native", None)
     assert benchmarks.parse("libero:libero_spatial/3") == ("libero", "libero_spatial/3")
 
 
-def test_describe_lists_every_family_without_importing_them():
+def test_describe_lists_every_suite_without_importing_them():
     text = benchmarks.describe()
-    for name in FAMILIES:
+    for name in SUITES:
         assert name in text
     assert "python main.py --env" in text
 
 
-def test_unknown_family_fails_with_a_useful_message():
+def test_unknown_suite_fails_with_a_useful_message():
     with pytest.raises(SystemExit) as e:
         benchmarks.make("nope:Task")
     assert "--list-envs" in str(e.value)
 
 
-def test_missing_family_names_the_install_command():
+def test_missing_suite_names_the_install_command():
     for name in SHAREABLE:
         if benchmarks.installed(name):
             continue
@@ -54,7 +54,7 @@ def test_missing_family_names_the_install_command():
         assert "pip install" in str(e.value) or "conda env" in str(e.value)
 
 
-def test_non_teleoperable_family_explains_why():
+def test_non_teleoperable_suite_explains_why():
     with pytest.raises(SystemExit) as e:
         benchmarks.make("aloha")
     assert "bimanual" in str(e.value).lower()
@@ -100,11 +100,11 @@ def test_native_reset_clears_the_round(native):
 
 # --- installed benchmarks ---------------------------------------------------
 
-@pytest.mark.parametrize("family", SHAREABLE)
-def test_installed_benchmark_drives(family):
-    if not benchmarks.installed(family):
-        pytest.skip(f"{family} not installed")
-    env = benchmarks.make(family, seed=0)
+@pytest.mark.parametrize("suite", SHAREABLE)
+def test_installed_benchmark_drives(suite):
+    if not benchmarks.installed(suite):
+        pytest.skip(f"{suite} not installed")
+    env = benchmarks.make(suite, seed=0)
     try:
         assert isinstance(env, TeleopEnv)
         assert 0 < env.control_dt <= 1.0
@@ -126,15 +126,15 @@ def test_installed_benchmark_drives(family):
         env.close()
 
 
-@pytest.mark.parametrize("family", SHAREABLE)
-def test_installed_benchmark_renders(family):
-    if not benchmarks.installed(family):
-        pytest.skip(f"{family} not installed")
-    env = benchmarks.make(family, seed=0)
+@pytest.mark.parametrize("suite", SHAREABLE)
+def test_installed_benchmark_renders(suite):
+    if not benchmarks.installed(suite):
+        pytest.skip(f"{suite} not installed")
+    env = benchmarks.make(suite, seed=0)
     try:
         frame = env.frame(160, 120)
         if frame is None:
-            pytest.skip(f"{family} returned no frame (no GL context)")
+            pytest.skip(f"{suite} returned no frame (no GL context)")
         assert frame.ndim == 3 and frame.shape[2] == 3
         assert frame.dtype == np.uint8
         assert frame.max() > 0, "frame is entirely black"
@@ -142,15 +142,15 @@ def test_installed_benchmark_renders(family):
         env.close()
 
 
-@pytest.mark.parametrize("family", SHAREABLE)
-def test_installed_benchmark_records_its_own_schema(family, tmp_path):
-    if not benchmarks.installed(family):
-        pytest.skip(f"{family} not installed")
+@pytest.mark.parametrize("suite", SHAREABLE)
+def test_installed_benchmark_records_its_own_schema(suite, tmp_path):
+    if not benchmarks.installed(suite):
+        pytest.skip(f"{suite} not installed")
     pytest.importorskip("pyarrow")
     import pyarrow.parquet as pq
     from recorder import EpisodeRecorder
 
-    env = benchmarks.make(family, seed=0)
+    env = benchmarks.make(suite, seed=0)
     try:
         rec = EpisodeRecorder(tmp_path, state_names=env.state_names,
                               action_names=env.action_names, task=env.task)
@@ -165,8 +165,8 @@ def test_installed_benchmark_records_its_own_schema(family, tmp_path):
         env.close()
 
 
-def test_gripper_signs_are_documented_per_family():
-    """The close sign differs between families and was measured, not assumed."""
+def test_gripper_signs_are_documented_per_suite():
+    """The close sign differs between suites and was measured, not assumed."""
     from benchmarks.gym_env import FETCH, METAWORLD
     from benchmarks.robosuite_env import GRIP_CLOSE as RS_CLOSE
     assert METAWORLD.grip_close == +1.0
@@ -198,44 +198,44 @@ def test_libero_drives_when_installed():
 
 # --- switching at runtime ---------------------------------------------------
 
-def test_switchable_is_installed_teleoperable_and_constructible():
-    ring = benchmarks.switchable()
-    assert NATIVE in ring, "the native arm is always switchable"
+def test_the_suite_ring_is_installed_teleoperable_and_constructible():
+    ring = benchmarks.suites()
+    assert NATIVE in ring, "the native arm is always in the suite ring"
     for name in ring:
-        fam = FAMILIES[name]
+        fam = SUITES[name]
         assert fam.supported and fam.factory is not None
         assert benchmarks.installed(name)
     assert "aloha" not in ring, "registered but has no factory -- cannot be built"
 
 
-def test_cycle_walks_the_ring_and_wraps():
-    ring = benchmarks.switchable()
+def test_cycle_suite_walks_the_ring_and_wraps():
+    ring = benchmarks.suites()
     spec = NATIVE
     seen = [spec]
     for _ in range(len(ring)):
-        spec = benchmarks.cycle(spec, 1)
+        spec = benchmarks.cycle_suite(spec, 1)
         seen.append(spec)
     assert seen[-1] == NATIVE, "stepping the length of the ring returns home"
     assert set(seen) == set(ring)
 
 
-def test_cycle_backwards_is_the_inverse():
-    for name in benchmarks.switchable():
-        assert benchmarks.cycle(benchmarks.cycle(name, 1), -1) == name
+def test_cycle_suite_backwards_is_the_inverse():
+    for name in benchmarks.suites():
+        assert benchmarks.cycle_suite(benchmarks.cycle_suite(name, 1), -1) == name
 
 
-def test_cycle_drops_the_task_because_it_means_nothing_next_door():
-    assert ":" not in benchmarks.cycle("robosuite:Lift", 1)
+def test_cycle_suite_drops_the_task_because_it_means_nothing_next_door():
+    assert ":" not in benchmarks.cycle_suite("robosuite:Lift", 1)
 
 
-def test_cycle_from_an_unknown_family_does_not_strand_the_operator():
-    assert benchmarks.cycle("nosuchthing:x", 1) in benchmarks.switchable()
+def test_cycle_suite_from_an_unknown_suite_does_not_strand_the_operator():
+    assert benchmarks.cycle_suite("nosuchthing:x", 1) in benchmarks.suites()
 
 
-# --- switching the task inside a family -------------------------------------
+# --- switching the task inside a suite --------------------------------------
 
-def test_cycle_task_stays_in_the_family_and_walks_its_tasks():
-    ring = list(FAMILIES["robosuite"].tasks)
+def test_cycle_task_stays_in_the_suite_and_walks_its_tasks():
+    ring = list(SUITES["robosuite"].tasks)
     spec = f"robosuite:{ring[0]}"
     seen = [spec]
     for _ in range(len(ring)):
@@ -251,7 +251,7 @@ def test_cycle_task_backwards_is_the_inverse():
     assert benchmarks.cycle_task(benchmarks.cycle_task(spec, 1), -1) == spec
 
 
-def test_cycle_task_does_nothing_for_a_family_with_one_setting():
+def test_cycle_task_does_nothing_for_a_suite_with_one_setting():
     """The native arm has one scene, so the caller can say so instead of
     silently rebuilding the identical environment."""
     assert benchmarks.cycle_task(NATIVE, 1) == NATIVE
@@ -260,11 +260,11 @@ def test_cycle_task_does_nothing_for_a_family_with_one_setting():
 
 def test_cycle_task_from_a_hand_typed_task_lands_on_the_ring():
     spec = benchmarks.cycle_task("libero:libero_90/17", 1)
-    assert spec.split(":")[1] in FAMILIES["libero"].tasks
+    assert spec.split(":")[1] in SUITES["libero"].tasks
 
 
 def test_tasks_reports_what_the_task_ring_holds():
-    assert benchmarks.tasks("robosuite:Lift") == FAMILIES["robosuite"].tasks
+    assert benchmarks.tasks("robosuite:Lift") == SUITES["robosuite"].tasks
     assert benchmarks.tasks("nosuchthing") == ()
 
 
@@ -306,6 +306,89 @@ def test_a_single_view_env_leaves_the_other_panels_dark():
     views = OneCamera().frames({"main": (8, 8), "wrist": (4, 4)})
     assert views["main"].shape == (8, 8, 3)
     assert views["wrist"] is None
+
+
+# --- the operator's camera: zoom and follow ---------------------------------
+# These are the controls that make the main view usable for close work, so they
+# are asserted on numbers: where the camera is looking and how far away it is.
+# None of it needs a GL context -- a camera is not a framebuffer.
+
+def test_the_camera_opens_pointed_at_the_work(native):
+    from benchmarks.native import HOME_CAM
+
+    cam = native._ensure_cam()
+    assert np.allclose(cam.lookat, native._focus())
+    assert cam.distance == pytest.approx(HOME_CAM[0])
+
+
+def test_focus_sits_between_the_gripper_and_what_it_is_reaching_for(native):
+    ee = np.asarray(native.game.arm.ee(), float)
+    cube = np.asarray(native.game.cube_pos(), float)
+    focus = native._focus()
+    assert np.linalg.norm(focus - ee) <= np.linalg.norm(cube - ee) + 1e-9
+    assert np.linalg.norm(focus - cube) <= np.linalg.norm(cube - ee) + 1e-9
+    assert focus[2] >= 0.06, "never look at a point under the floor"
+
+
+def test_zoom_is_multiplicative_and_clamped_both_ways(native):
+    from benchmarks.native import ZOOM_RANGE
+
+    start = native._ensure_cam().distance
+    native.zoom(0.1)
+    assert native.cam.distance < start, "+ dollies in"
+    native.zoom(-0.2)
+    assert native.cam.distance > start, "- dollies out"
+    for _ in range(200):
+        native.zoom(1.0)
+    assert native.cam.distance == pytest.approx(ZOOM_RANGE[0])
+    for _ in range(200):
+        native.zoom(-1.0)
+    assert native.cam.distance == pytest.approx(ZOOM_RANGE[1])
+
+
+def _run(env, ticks=60, dz=0.0):
+    for _ in range(ticks):
+        env.step(0.4, 0.0, dz, 0.0, False, env.control_dt)
+
+
+def test_following_closes_on_the_work_and_can_be_switched_off(native):
+    native.track()                              # first call only sets the clock
+    _run(native)
+    before = np.linalg.norm(native.cam.lookat - native._focus())
+    native.track()
+    after = np.linalg.norm(native.cam.lookat - native._focus())
+    assert after < before, "the camera should have eased toward the work"
+
+    assert native.toggle_follow() is False
+    frozen = np.array(native.cam.lookat)
+    _run(native)
+    native.track()
+    assert np.allclose(native.cam.lookat, frozen), "follow off means hold still"
+    assert native.toggle_follow() is True
+
+
+def test_tracking_advances_once_per_simulated_instant(native):
+    """Recording renders the same tick twice; the camera must not move twice."""
+    native.track()
+    _run(native)
+    native.track()
+    once = np.array(native.cam.lookat)
+    native.track()
+    native.track()
+    assert np.allclose(native.cam.lookat, once)
+
+
+def test_a_benchmark_without_a_movable_camera_just_ignores_the_controls():
+    class Fixed(TeleopEnv):
+        def reset(self, full=False): pass
+        def step(self, *a): return False
+        def observation(self): return np.zeros(1)
+        def hud(self): return Hud()
+
+    env = Fixed()
+    env.zoom(1.0)                               # must not raise
+    env.orbit(10.0)
+    assert env.toggle_follow() is False, "and it says so, rather than pretending"
 
 
 # --- the live session: what main.py does with all of the above --------------
@@ -376,17 +459,17 @@ def test_switching_closes_the_episode_and_opens_the_next(tmp_path, monkeypatch):
     after.env.close()
 
 
-@pytest.mark.parametrize("family", SHAREABLE)
-def test_installed_benchmark_renders_every_view_it_declares(family):
-    if not benchmarks.installed(family):
-        pytest.skip(f"{family} not installed")
-    env = benchmarks.make(family, seed=0)
+@pytest.mark.parametrize("suite", SHAREABLE)
+def test_installed_benchmark_renders_every_view_it_declares(suite):
+    if not benchmarks.installed(suite):
+        pytest.skip(f"{suite} not installed")
+    env = benchmarks.make(suite, seed=0)
     try:
         assert env.view_names, "an env must declare at least one view"
         views = env.frames({v: (96, 96) for v in env.view_names})
         assert set(views) == set(env.view_names)
         for name, rgb in views.items():
-            assert rgb is not None, f"{family} declares {name} but renders nothing"
+            assert rgb is not None, f"{suite} declares {name} but renders nothing"
             assert rgb.ndim == 3 and rgb.dtype == np.uint8
     finally:
         env.close()
