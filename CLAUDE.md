@@ -25,6 +25,7 @@ skillcrane/
   kin.py          Arm (FK/Jacobian/pose error), IKController, down_R
   game.py         Game: physics, scoring, spawn logic. NO pygame import.
   input.py        GamepadReader + KeyboardReader -> a common ControlInput dataclass
+                  (SDL standard layout when available, raw indices otherwise)
   render.py       offscreen render + HUD drawing
   recorder.py     LeRobot-format episode logging (optional deps)
   benchmarks/     adapters: native, robosuite, Meta-World, Fetch, LIBERO
@@ -110,14 +111,15 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 | M2 | stable tracking | `test_m2_tracking.py` | 6 passed |
 | M3 | grasping (12 seeds) | `test_m3_grasp.py` | 19 passed |
 | M4 | game rules | `test_m4_rules.py` | 17 passed |
-| M5 | input layer | `test_m5_input.py` | 33 passed |
+| M5 | input layer | `test_m5_input.py` | 43 passed |
 | M6 | render + HUD | `test_m6_render.py` | 7 passed |
-| M7 | recording (stretch) | `test_m7_record.py` | 7 passed |
-| M8 | benchmark adapters | `test_benchmarks.py` | 11 passed, 10 skipped |
+| M7 | recording (stretch) | `test_m7_record.py` | 10 passed |
+| M8 | benchmark adapters | `test_benchmarks.py` | 16 passed, 10 skipped |
 | — | hard rule | `test_no_pygame.py` | 4 passed |
 
-Totals: **116 passed / 10 skipped** with no benchmarks installed, **125 passed**
-with robosuite + Meta-World + Fetch, **117 passed** in the LIBERO environment.
+Totals: **134 passed / 10 skipped** with no benchmarks installed. The counts
+with the benchmark families installed have not been re-measured since the
+switching work.
 
 ## Benchmark constraints
 
@@ -143,11 +145,23 @@ with robosuite + Meta-World + Fetch, **117 passed** in the LIBERO environment.
 
 ## Gamepad notes
 
-8BitDo pads report different layouts per pairing mode. On macOS use Apple mode
-(hold Start+A on power-on) or D-input (Start+B); XInput mode is a Windows API and
-is useless here. Axis and button indices live in **one config block at the top of
-`input.py`** — never scattered. `gamepad_probe.py` prints live axis and button
-indices so the mapping can be discovered rather than guessed.
+Read the pad through **SDL's game-controller layer** (`pygame._sdl2.controller`)
+whenever SDL recognises it, and only fall back to raw joystick indices when it
+does not. SDL's controller database reports a standard layout — A is A, LB is
+LB — regardless of pairing mode, which is the actual fix for "8BitDo pads
+enumerate differently per mode". The two numberings are not compatible: SDL
+calls the shoulders 9 and 10, a raw HID pad usually 4 and 5, so reading a
+controller through the raw table silently breaks the camera buttons.
+
+Raw indices still exist for unknown pads, and both tables live in **one config
+block at the top of `input.py`** — never scattered. `GamepadReader` reads by
+role (`"grip"`, `"cam_l"`), so neither table leaks into the read path.
+`gamepad_probe.py` reports which path is live, what `input.py` makes of each
+control next to the raw numbers, and the block to edit if the layout is raw.
+
+Pairing modes still matter for the fallback: Apple (hold Start+A on power-on),
+D-input (Start+B); XInput is a Windows API and is useless here. Some models,
+including the Ultimate 2C, use a switch on the back instead.
 
 ## Testing rules
 

@@ -10,7 +10,8 @@ from game import Game
 pytest.importorskip("pyarrow", reason="--record needs pyarrow")
 pytest.importorskip("PIL", reason="--record needs Pillow")
 
-from recorder import ACTION_NAMES, STATE_NAMES, EpisodeRecorder  # noqa: E402
+from recorder import (ACTION_NAMES, STATE_NAMES, EpisodeRecorder,  # noqa: E402
+                      next_episode_index)
 
 TICKS = 40
 
@@ -131,3 +132,33 @@ def test_recording_without_frames_still_writes_state_and_action(tmp_path):
 def test_empty_recorder_refuses_to_save(tmp_path):
     with pytest.raises(ValueError):
         EpisodeRecorder(tmp_path).save()
+
+
+# --- episode numbering ------------------------------------------------------
+
+def test_next_episode_index_starts_at_zero_in_an_empty_directory(tmp_path):
+    assert next_episode_index(tmp_path) == 0
+    assert next_episode_index(tmp_path / "does-not-exist") == 0
+
+
+def test_next_episode_index_follows_what_is_on_disk(tmp_path):
+    """The bug this prevents: every run writing episode_000000 over the last."""
+    rec = EpisodeRecorder(tmp_path, episode_index=next_episode_index(tmp_path))
+    rec.add(np.zeros(10), np.zeros(5))
+    rec.save()
+    assert next_episode_index(tmp_path) == 1
+
+    rec2 = EpisodeRecorder(tmp_path, episode_index=next_episode_index(tmp_path))
+    rec2.add(np.zeros(10), np.zeros(5))
+    out = rec2.save()
+    assert out.name == "episode_000001.parquet"
+    assert len(list((tmp_path / "data" / "chunk-000").glob("*.parquet"))) == 2
+
+
+def test_next_episode_index_ignores_files_that_are_not_episodes(tmp_path):
+    data = tmp_path / "data" / "chunk-000"
+    data.mkdir(parents=True)
+    (data / "episode_000004.parquet").touch()
+    (data / "notes.parquet").touch()
+    (data / "episode_bogus.parquet").touch()
+    assert next_episode_index(tmp_path) == 5

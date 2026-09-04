@@ -46,6 +46,10 @@ class Display:
         self.f_sm = pygame.font.SysFont("menlo,dejavusansmono,monospace", 17)
         self.flash = 0.0
 
+    def set_caption(self, caption: str) -> None:
+        """Window title, so switching environments is visible outside the HUD."""
+        pygame.display.set_caption(caption)
+
     def blit_frame(self, rgb) -> None:
         """Blit an RGB frame, scaled to the viewport if it is a different size.
 

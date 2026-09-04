@@ -31,6 +31,18 @@ MAX_STEPS_PER_FRAME = 8      # keeps a slow env from spiralling on catch-up
 DEFAULT_RECORD_DIR = "runs/"  # where a bare --record collects to
 
 
+def _new_recorder(root, env=None):
+    """Recorder for `env`'s schema, writing into the next free episode slot.
+
+    Episode index comes from the directory, not a counter, so a second run into
+    the same DIR adds an episode instead of overwriting the first.
+    """
+    from recorder import EpisodeRecorder, next_episode_index
+    kw = {} if env is None else {"state_names": env.state_names,
+                                 "action_names": env.action_names, "task": env.task}
+    return EpisodeRecorder(root, episode_index=next_episode_index(root), **kw)
+
+
 def run_headless(seed: int = 2, record=None, env_spec: str = "native") -> int:
     """Scripted acceptance run for the native arm; a smoke test for benchmarks."""
     if env_spec != "native":
@@ -42,8 +54,7 @@ def run_headless(seed: int = 2, record=None, env_spec: str = "native") -> int:
     rec = ren = None
     if record is not None:
         import mujoco
-        from recorder import EpisodeRecorder
-        rec = EpisodeRecorder(record)
+        rec = _new_recorder(record)
         ren = mujoco.Renderer(g.m, height=240, width=320)
         cam = mujoco.MjvCamera()
         cam.lookat[:] = [0.10, 0.10, 0.15]
@@ -78,14 +89,11 @@ def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60) 
     success criteria and we are only proving the adapter wiring is live.
     """
     import benchmarks
-    from recorder import EpisodeRecorder
 
     env = benchmarks.make(env_spec, seed=seed)
     print(f"env        {env_spec}  ({env.task})")
     print(f"control_dt {env.control_dt:.4f}s   state dim {env.observation().size}")
-    rec = EpisodeRecorder(record, state_names=env.state_names,
-                          action_names=env.action_names, task=env.task) \
-        if record is not None else None
+    rec = _new_recorder(record, env) if record is not None else None
 
     scored = 0
     for i in range(ticks):
@@ -102,6 +110,37 @@ def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60) 
     return 0
 
 
+def _switch_env(env, spec, step, seed, record, rec):
+    """Cycle to the next installed environment without leaving the session.
+
+    Returns (env, spec, rec). A switch changes the observation and action
+    schema, so a recording in progress is closed out here and the next episode
+    opens under the new environment's columns -- otherwise one parquet would
+    carry two different meanings of `observation.state`.
+    """
+    import benchmarks
+
+    new_spec = benchmarks.cycle(spec, step)
+    if new_spec == spec:
+        print(f"only {spec} is installed -- nothing to switch to; "
+              f"see python main.py --list-envs")
+        return env, spec, rec
+    try:
+        new_env = benchmarks.make(new_spec, seed=seed)
+    except (SystemExit, Exception) as exc:
+        # Broad on purpose: a backend that fails to build (a bad install, a
+        # missing asset download) must not take the live session down with it.
+        print(f"could not switch to {new_spec}: {exc}")
+        return env, spec, rec
+
+    if rec is not None and len(rec):
+        print(f"recorded {len(rec)} ticks -> {rec.save()}")
+    env.close()
+    print(f"env -> {new_spec}  ({new_env.task})")
+    return (new_env, new_spec,
+            _new_recorder(record, new_env) if record is not None else rec)
+
+
 def run_game(seed=None, record=None, env_spec: str = "native") -> int:
     import pygame
 
@@ -111,8 +150,11 @@ def run_game(seed=None, record=None, env_spec: str = "native") -> int:
 
     if seed is None:
         seed = int(np.random.randint(1 << 30))
-    env = benchmarks.make(env_spec, seed=seed)
-    display = Display(caption=f"Skillcrane - {env_spec}")
+    spec = env_spec
+    env = benchmarks.make(spec, seed=seed)
+    display = Display(caption=f"Skillcrane - {spec}")
+    ring = benchmarks.switchable()
+    print("environments:", "  ".join(ring), "   ([ / ] or Back/Start to switch)")
 
     pad = GamepadReader.open()
     if pad:
@@ -125,14 +167,13 @@ def run_game(seed=None, record=None, env_spec: str = "native") -> int:
 
     rec = None
     if record is not None:
-        from recorder import EpisodeRecorder
-        rec = EpisodeRecorder(record, state_names=env.state_names,
-                              action_names=env.action_names, task=env.task)
-        print(f"recording to {record}")
+        rec = _new_recorder(record, env)
+        print(f"recording to {record}  (episode {rec.episode_index})")
 
     frame_dt = 1 / 60
     accum = 0.0
     running = True
+    env_latch = False           # switching steps once per press, not per frame
     while running:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -145,6 +186,11 @@ def run_game(seed=None, record=None, env_spec: str = "native") -> int:
             ci = merge(ci, pad.read())
         if ci.reset:
             env.reset(full=True)
+        if ci.env and not env_latch:
+            env, spec, rec = _switch_env(env, spec, ci.env, seed, record, rec)
+            display.set_caption(f"Skillcrane - {spec}")
+            accum = 0.0         # the new env has its own control rate
+        env_latch = bool(ci.env)
         if ci.cam:
             env.orbit(ci.cam * CAM_SPEED * frame_dt)
 
@@ -166,7 +212,9 @@ def run_game(seed=None, record=None, env_spec: str = "native") -> int:
                         [dx, dy, ci.mz, ci.dyaw, float(ci.grip)],
                         frame if steps == 1 else None)
 
-        display.draw(env.hud(), frame, scored, frame_dt)
+        display.draw(env.hud(), frame, scored, frame_dt,
+                     controls=f"[{spec}]  L-stick move  R-stick lift/rotate  "
+                              f"A grip  LB/RB camera  Y reset  Back/Start env")
         display.tick(60)
 
     if rec is not None and len(rec):

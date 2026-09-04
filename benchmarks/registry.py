@@ -164,6 +164,33 @@ def make(spec: str = NATIVE, seed: int = 0):
     return fam.factory(task, seed)
 
 
+def switchable() -> tuple:
+    """Families that can be cycled through at runtime, in declaration order.
+
+    Installed, teleoperable, and actually constructible -- `aloha` is registered
+    but has no factory, so it can never be switched to.
+    """
+    return tuple(name for name, fam in FAMILIES.items()
+                 if fam.supported and fam.factory is not None and installed(name))
+
+
+def cycle(spec: str, step: int = 1) -> str:
+    """The next installed family around the ring from `spec`.
+
+    Returns a bare family name: the task resets to that family's default,
+    because a task id from one family means nothing in the next. An unknown or
+    uninstalled current family starts the ring from the beginning, so this can
+    never strand the operator.
+    """
+    ring = switchable()
+    if not ring:                    # pragma: no cover - native is always in
+        return spec
+    family, _ = parse(spec)
+    if family in ring:
+        return ring[(ring.index(family) + step) % len(ring)]
+    return ring[0]
+
+
 def describe() -> str:
     """Human-readable table for --list-envs."""
     rows = []

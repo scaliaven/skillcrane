@@ -24,6 +24,25 @@ STATE_NAMES = [f"j{i}" for i in range(1, 7)] + ["grip", "cube_x", "cube_y", "cub
 ACTION_NAMES = ["dx", "dy", "dz", "dyaw", "grip"]
 
 
+def next_episode_index(root) -> int:
+    """First unused episode index in `root`.
+
+    Without this every run writes episode_000000 and silently overwrites the
+    last one, which is fatal for a directory that is supposed to accumulate a
+    dataset. Reads the directory rather than any counter, so it stays right
+    across separate runs of the program.
+    """
+    data = Path(root) / "data" / "chunk-000"
+    if not data.is_dir():
+        return 0
+    used = []
+    for f in data.glob("episode_*.parquet"):
+        digits = f.stem.split("_")[-1]
+        if digits.isdigit():
+            used.append(int(digits))
+    return max(used) + 1 if used else 0
+
+
 class EpisodeRecorder:
     """Accumulates one episode in memory, writes it out on save().
 

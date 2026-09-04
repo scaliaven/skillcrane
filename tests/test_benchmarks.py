@@ -194,3 +194,39 @@ def test_libero_drives_when_installed():
         assert frame is not None and frame.dtype == np.uint8
     finally:
         env.close()
+
+
+# --- switching at runtime ---------------------------------------------------
+
+def test_switchable_is_installed_teleoperable_and_constructible():
+    ring = benchmarks.switchable()
+    assert NATIVE in ring, "the native arm is always switchable"
+    for name in ring:
+        fam = FAMILIES[name]
+        assert fam.supported and fam.factory is not None
+        assert benchmarks.installed(name)
+    assert "aloha" not in ring, "registered but has no factory -- cannot be built"
+
+
+def test_cycle_walks_the_ring_and_wraps():
+    ring = benchmarks.switchable()
+    spec = NATIVE
+    seen = [spec]
+    for _ in range(len(ring)):
+        spec = benchmarks.cycle(spec, 1)
+        seen.append(spec)
+    assert seen[-1] == NATIVE, "stepping the length of the ring returns home"
+    assert set(seen) == set(ring)
+
+
+def test_cycle_backwards_is_the_inverse():
+    for name in benchmarks.switchable():
+        assert benchmarks.cycle(benchmarks.cycle(name, 1), -1) == name
+
+
+def test_cycle_drops_the_task_because_it_means_nothing_next_door():
+    assert ":" not in benchmarks.cycle("robosuite:Lift", 1)
+
+
+def test_cycle_from_an_unknown_family_does_not_strand_the_operator():
+    assert benchmarks.cycle("nosuchthing:x", 1) in benchmarks.switchable()

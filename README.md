@@ -51,12 +51,12 @@ source. `environment.yml` explains it and how to make the setting stick.
 ```sh
 python main.py                  # play
 python main.py --list-envs      # benchmark environments, and what's installed
-python main.py --env robosuite:Lift          # teleop a benchmark instead
+python main.py --env robosuite:Lift          # start on a benchmark ([ / ] switches live)
 python main.py --headless       # scripted pick-and-place, no window, exits 0 on a score
 python main.py --seed 7         # fixed cube spawns
 python main.py --record         # collect the session into runs/ (off unless asked)
 python main.py --record DIR     # ... into DIR instead
-python gamepad_probe.py         # discover your pad's axis/button indices
+python gamepad_probe.py         # see what your pad reports, and how it is read
 ```
 
 ## Controls
@@ -67,13 +67,27 @@ python gamepad_probe.py         # discover your pad's axis/button indices
 | raise / lower | right stick Y | `Q` / `E` |
 | rotate wrist | right stick X | `Z` / `C` |
 | gripper | `A` (toggle) | `SPACE` (hold) |
-| orbit camera | `LB` / `RB` | `←` / `→` |
+| orbit camera | `LB` / `RB`, or d-pad ← → | `←` / `→` |
+| switch environment | `Back` / `Start` | `[` / `]` |
 | reset round | `Y` | `R` |
 | quit | — | `ESC` |
 
-8BitDo pads enumerate differently per pairing mode. On macOS use Apple mode
-(hold Start+A on power-on) or D-input (Start+B). If the arm moves on the wrong
-stick, run `gamepad_probe.py` and edit the config block at the top of `input.py`.
+The pad is read through **SDL's game-controller layer**, which recognises the
+device from SDL's own database and reports a standard layout — A is A, LB is LB
+— whatever pairing mode it is in. That is what makes an 8BitDo work without
+hand-mapping; the two numberings really do disagree, SDL calling the shoulders
+9 and 10 where a raw HID pad reports 4 and 5.
+
+A pad SDL does not know falls back to raw indices, and *those* are the ones that
+differ per pairing mode (Apple = hold Start+A on power-on, D-input = Start+B;
+some models, the Ultimate 2C included, use a switch on the back). Run
+`gamepad_probe.py`: it says which path is live, shows what `input.py` makes of
+every control next to the raw numbers, and if the layout is raw, prints the
+config block to edit at the top of `input.py`.
+
+**Only the native arm has a camera you can orbit.** The benchmark families
+render from a fixed camera their own adapter picks, so `LB`/`RB` and the arrow
+keys do nothing there — by design, not because the buttons are unmapped.
 
 ## Layout
 
@@ -95,12 +109,11 @@ runs headless. See `CLAUDE.md` for the physics constraints that must not be
 ## Tests
 
 ```sh
-python -m pytest -q          # 116 tests, ~8 s, no display and no gamepad needed
+python -m pytest -q          # 134 tests, ~10 s, no display and no gamepad needed
 ```
 
 Benchmark tests skip cleanly when the benchmark isn't installed, so a bare
-checkout stays green (116 passed / 10 skipped; 125 passed with the benchmark
-families installed).
+checkout stays green (134 passed / 10 skipped).
 
 Physics tests assert on numbers — contact count, joint velocity, tracking error,
 cube height, score — and the grasp tests are parametrised over 12 random spawns,
@@ -169,9 +182,10 @@ cat runs/meta/episodes.jsonl
 
 Two things to know before collecting in bulk:
 
-- **One run writes one episode, always `episode_000000`** — a second `--record`
-  into the same directory overwrites the first. Record to a fresh directory per
-  episode until the index is threaded through.
+- **Episodes accumulate; they do not overwrite.** The episode index comes from
+  reading the directory, not from a counter, so recording into the same `DIR`
+  across separate runs of the program appends `episode_000001`,
+  `episode_000002`, … and `meta/` stays consistent with them.
 - **Frames dominate the size.** One PNG per 100 Hz tick is ~37 KB, so the 16.8 s
   episode above is 63 MB and a 90 s round is ~340 MB. `EpisodeRecorder` accepts
   frames at a lower rate (pass `None` on the ticks you skip; the image column
@@ -191,6 +205,22 @@ CONDA_SUBDIR=osx-arm64 conda env create -f environment-libero.yml   # LIBERO (ro
 
 They need `mujoco<3.12` — see [`BENCHMARKS.md`](BENCHMARKS.md) for why, plus the
 gripper-sign table and two other install landmines.
+
+### Switching without restarting
+
+`[` / `]` on the keyboard, or `Back` / `Start` on the pad, cycles through the
+families that are actually installed — `--list-envs` shows the ring, and a
+family you have not installed is never in it. The task resets to that family's
+default, because a task id from one family means nothing in the next.
+
+A switch tears down the old environment and builds the new one, so it is not
+instant; the window title and the HUD both name the environment you are on. If
+a backend fails to build (a bad install, an asset download that hasn't run), the
+session says so and stays on the environment you were already driving.
+
+While recording, a switch **closes the current episode and opens the next one**
+— the two environments have different `observation.state` widths, so they must
+not share a parquet.
 
 ## Note
 

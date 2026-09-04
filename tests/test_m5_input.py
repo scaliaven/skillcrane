@@ -216,3 +216,118 @@ def test_idle_input_is_all_zero():
     ci = merge(KeyboardReader().read(keys()), GamepadReader(FakePad()).read())
     assert (ci.mx, ci.my, ci.mz, ci.dyaw, ci.cam) == (0.0, 0.0, 0.0, 0.0, 0.0)
     assert ci.grip is False and ci.reset is False
+
+
+# --- environment switching --------------------------------------------------
+
+def test_env_buttons_step_one_environment_each_way():
+    pad = FakePad()
+    r = GamepadReader(pad)
+    assert r.read().env == 0
+    pad.buttons[inp.BTN_ENV_NEXT] = 1
+    assert r.read().env == 1
+    pad.buttons[inp.BTN_ENV_NEXT] = 0
+    pad.buttons[inp.BTN_ENV_PREV] = 1
+    assert r.read().env == -1
+
+
+def test_keyboard_brackets_switch_environments():
+    kb = KeyboardReader()
+    assert kb.read(keys(pygame.K_RIGHTBRACKET)).env == 1
+    assert kb.read(keys(pygame.K_LEFTBRACKET)).env == -1
+    assert kb.read(keys()).env == 0
+
+
+def test_merge_never_steps_more_than_one_environment():
+    """Both devices asking at once must still move exactly one place."""
+    m = merge(ControlInput(env=1), ControlInput(env=1))
+    assert m.env == 1
+
+
+# --- SDL's standard layout --------------------------------------------------
+
+class FakeController:
+    """Stand-in for pygame._sdl2.controller.Controller.
+
+    Indexed by SDL's own ids, and axes are signed 16-bit, which is what makes
+    it different from the raw joystick API.
+    """
+
+    def __init__(self):
+        self.axes = defaultdict(int)
+        self.buttons = defaultdict(bool)
+
+    def get_axis(self, i):
+        return self.axes[i]
+
+    def get_button(self, i):
+        return self.buttons[i]
+
+
+def test_controller_path_scales_sdl_int16_axes_to_unit_range():
+    ctl = FakeController()
+    ctl.axes[pygame.CONTROLLER_AXIS_LEFTY] = -32767
+    ci = GamepadReader(FakePad(), ctl=ctl).read()
+    assert ci.my == pytest.approx(1.0), "full stick up must read as +1, not 32767"
+
+
+def test_controller_shoulders_orbit_where_the_raw_indices_would_not():
+    """The regression this path exists for.
+
+    SDL numbers the shoulders 9 and 10; a raw HID pad usually reports them at
+    4 and 5. Reading a controller through the raw table is why the camera
+    buttons did nothing on an 8BitDo.
+    """
+    assert pygame.CONTROLLER_BUTTON_LEFTSHOULDER != inp.BTN_CAM_L
+    ctl = FakeController()
+    ctl.buttons[pygame.CONTROLLER_BUTTON_RIGHTSHOULDER] = True
+    assert GamepadReader(FakePad(), ctl=ctl).read().cam == pytest.approx(1.0)
+    ctl.buttons[pygame.CONTROLLER_BUTTON_RIGHTSHOULDER] = False
+    ctl.buttons[pygame.CONTROLLER_BUTTON_LEFTSHOULDER] = True
+    assert GamepadReader(FakePad(), ctl=ctl).read().cam == pytest.approx(-1.0)
+
+
+def test_controller_ignores_the_raw_indices_entirely():
+    pad = FakePad()
+    pad.buttons[inp.BTN_CAM_L] = 1        # would orbit on the raw path
+    pad.buttons[inp.BTN_GRIP] = 1         # would close the gripper
+    ci = GamepadReader(pad, ctl=FakeController()).read()
+    assert ci.cam == 0.0 and ci.grip is False
+
+
+def test_controller_dpad_also_orbits():
+    ctl = FakeController()
+    ctl.buttons[pygame.CONTROLLER_BUTTON_DPAD_RIGHT] = True
+    assert GamepadReader(FakePad(), ctl=ctl).read().cam == pytest.approx(1.0)
+
+
+def test_standard_flag_says_which_path_is_live():
+    assert GamepadReader(FakePad()).standard is False
+    assert GamepadReader(FakePad(), ctl=FakeController()).standard is True
+
+
+# --- raw d-pad --------------------------------------------------------------
+
+class FakeHatPad(FakePad):
+    """A raw pad whose d-pad is a hat, which is how pygame reports one."""
+
+    def __init__(self, hat=(0, 0), **kw):
+        super().__init__(**kw)
+        self.hats = [hat]
+
+    def get_numhats(self):
+        return len(self.hats)
+
+    def get_hat(self, i):
+        return self.hats[i]
+
+
+def test_raw_dpad_hat_orbits():
+    assert GamepadReader(FakeHatPad(hat=(1, 0))).read().cam == pytest.approx(1.0)
+    assert GamepadReader(FakeHatPad(hat=(-1, 0))).read().cam == pytest.approx(-1.0)
+    assert GamepadReader(FakeHatPad(hat=(0, 1))).read().cam == 0.0
+
+
+def test_a_pad_with_no_hat_does_not_crash():
+    """FakePad has no get_numhats at all, like a minimal joystick."""
+    assert GamepadReader(FakePad()).read().cam == 0.0
