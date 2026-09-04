@@ -10,8 +10,8 @@ from game import Game
 pytest.importorskip("pyarrow", reason="--record needs pyarrow")
 pytest.importorskip("PIL", reason="--record needs Pillow")
 
-from recorder import (ACTION_NAMES, STATE_NAMES, EpisodeRecorder,  # noqa: E402
-                      next_episode_index)
+from recorder import (ACTION_NAMES, IMAGE_PREFIX, STATE_NAMES,  # noqa: E402
+                      EpisodeRecorder, next_episode_index)
 
 TICKS = 40
 
@@ -132,6 +132,106 @@ def test_recording_without_frames_still_writes_state_and_action(tmp_path):
 def test_empty_recorder_refuses_to_save(tmp_path):
     with pytest.raises(ValueError):
         EpisodeRecorder(tmp_path).save()
+
+
+# --- more than one camera ---------------------------------------------------
+
+def frames(n: int, size=(12, 16)):
+    """n distinguishable fake frames, so a mix-up between views is visible."""
+    h, w = size
+    return [np.full((h, w, 3), 10 * (i + 1), np.uint8) for i in range(n)]
+
+
+def test_each_view_becomes_its_own_image_column(tmp_path):
+    import pyarrow.parquet as pq
+    rec = EpisodeRecorder(tmp_path)
+    for i in range(4):
+        scene_f, wrist_f = frames(2)
+        rec.add(np.zeros(10), np.zeros(5), {"scene": scene_f, "wrist": wrist_f})
+    t = pq.read_table(rec.save())
+
+    assert f"{IMAGE_PREFIX}scene" in t.column_names
+    assert f"{IMAGE_PREFIX}wrist" in t.column_names
+    for key in (f"{IMAGE_PREFIX}scene", f"{IMAGE_PREFIX}wrist"):
+        paths = t.column(key).to_pylist()
+        assert len(paths) == 4 and all(key in p for p in paths)
+        assert len(set(paths)) == 4, "every tick needs its own frame file"
+        for rel in paths:
+            assert (tmp_path / rel).exists()
+
+
+def test_views_keep_their_own_size_and_pixels(tmp_path):
+    from PIL import Image
+    rec = EpisodeRecorder(tmp_path)
+    rec.add(np.zeros(10), np.zeros(5),
+            {"scene": np.full((24, 32, 3), 200, np.uint8),
+             "wrist": np.full((12, 16, 3), 40, np.uint8)})
+    rec.save()
+
+    with Image.open(tmp_path / "images" / f"{IMAGE_PREFIX}scene"
+                    / "episode_000000" / "frame_000000.png") as im:
+        assert im.size == (32, 24) and im.getpixel((0, 0))[0] == 200
+    with Image.open(tmp_path / "images" / f"{IMAGE_PREFIX}wrist"
+                    / "episode_000000" / "frame_000000.png") as im:
+        assert im.size == (16, 12) and im.getpixel((0, 0))[0] == 40
+
+    info = json.loads((tmp_path / "meta" / "info.json").read_text())
+    assert info["features"][f"{IMAGE_PREFIX}scene"]["shape"] == [24, 32, 3]
+    assert info["features"][f"{IMAGE_PREFIX}wrist"]["shape"] == [12, 16, 3]
+
+
+def test_a_tick_without_new_frames_repeats_each_view(tmp_path):
+    """Frames can be logged at a lower rate than the control loop, per camera."""
+    import pyarrow.parquet as pq
+    from PIL import Image
+    rec = EpisodeRecorder(tmp_path)
+    first, second = frames(2)
+    rec.add(np.zeros(10), np.zeros(5), {"scene": first, "wrist": second})
+    rec.add(np.zeros(10), np.zeros(5), None)
+    t = pq.read_table(rec.save())
+
+    assert t.num_rows == 2
+    paths = t.column(f"{IMAGE_PREFIX}scene").to_pylist()
+    assert len(paths) == 2 and paths[0] != paths[1]
+    with Image.open(tmp_path / paths[1]) as im:
+        assert im.getpixel((0, 0))[0] == 10, "the repeat should be the last frame"
+
+
+def test_a_view_that_never_rendered_gets_no_column(tmp_path):
+    """A camera that comes back None must not invent an image path."""
+    import pyarrow.parquet as pq
+    rec = EpisodeRecorder(tmp_path)
+    rec.add(np.zeros(10), np.zeros(5), {"scene": frames(1)[0], "wrist": None})
+    t = pq.read_table(rec.save())
+    assert f"{IMAGE_PREFIX}wrist" not in t.column_names
+    assert f"{IMAGE_PREFIX}scene" in t.column_names
+
+
+def test_a_view_that_starts_late_pads_with_nulls(tmp_path):
+    import pyarrow.parquet as pq
+    rec = EpisodeRecorder(tmp_path)
+    rec.add(np.zeros(10), np.zeros(5), {"scene": frames(1)[0]})
+    rec.add(np.zeros(10), np.zeros(5), {"scene": frames(1)[0],
+                                        "wrist": frames(1)[0]})
+    t = pq.read_table(rec.save())
+    wrist = t.column(f"{IMAGE_PREFIX}wrist").to_pylist()
+    assert wrist[0] is None and wrist[1] is not None
+
+
+def test_a_single_frame_still_uses_the_default_image_key(tmp_path):
+    """The one-camera API is unchanged: an array goes under image_key."""
+    import pyarrow.parquet as pq
+    rec = EpisodeRecorder(tmp_path)
+    rec.add(np.zeros(10), np.zeros(5), frames(1)[0])
+    t = pq.read_table(rec.save())
+    assert rec.image_key in t.column_names
+    assert rec.image_key.startswith(IMAGE_PREFIX)
+
+
+def test_image_column_names_a_view_the_way_lerobot_does():
+    assert EpisodeRecorder.image_column("wrist") == "observation.images.wrist"
+    already = "observation.images.agentview"
+    assert EpisodeRecorder.image_column(already) == already
 
 
 # --- episode numbering ------------------------------------------------------

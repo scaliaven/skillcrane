@@ -78,6 +78,72 @@ def test_orbit_moves_the_native_camera(display):
     assert env.azimuth == pytest.approx(az + render.CAM_SPEED / 60)
 
 
+# --- multi-view layouts -----------------------------------------------------
+
+def test_panels_fit_inside_the_viewport():
+    import render
+    for layout in render.LAYOUTS:
+        for n in range(1, 6):
+            rects = render.panels(layout, n)
+            assert 1 <= len(rects) <= max(1, min(n, 4))
+            for x, y, w, h in rects:
+                assert w > 0 and h > 0
+                assert 0 <= x and x + w <= render.RENDER_W
+                assert 0 <= y and y + h <= render.RENDER_H
+
+
+def test_one_camera_always_gets_the_whole_viewport():
+    """Cycling layouts on a single-view benchmark must not shrink its frame."""
+    import render
+    for layout in render.LAYOUTS:
+        assert render.panels(layout, 1) == [(0, 0, render.RENDER_W, render.RENDER_H)]
+
+
+def test_grid_panels_do_not_overlap():
+    import render
+    rects = render.panels("grid", 4)
+    for i, (x, y, w, h) in enumerate(rects):
+        for x2, y2, w2, h2 in rects[i + 1:]:
+            apart = x + w <= x2 or x2 + w2 <= x or y + h <= y2 or y2 + h2 <= y
+            assert apart, "grid cells must tile, not stack"
+
+
+def test_view_sizes_ask_for_exactly_what_will_be_drawn(display):
+    """The env renders panel-sized frames, so nothing is rendered and scaled away."""
+    env, d, render = display
+    d.layout = "grid"
+    sizes = d.view_sizes(env.view_names)
+    assert list(sizes) == list(env.view_names)[:4]
+    rects = render.panels("grid", len(sizes))
+    assert list(sizes.values()) == [(w, h) for _, _, w, h in rects]
+
+
+def test_layout_cycles_through_every_layout(display):
+    _, d, render = display
+    seen = [d.layout]
+    for _ in range(len(render.LAYOUTS)):
+        seen.append(d.cycle_layout())
+    assert set(seen) == set(render.LAYOUTS)
+    assert seen[-1] == seen[0], "cycling the whole ring comes home"
+
+
+def test_draws_every_view_of_a_multi_camera_env(display):
+    env, d, render = display
+    d.layout = "inset"
+    views = env.frames(d.view_sizes(env.view_names))
+    assert len(views) == len(env.view_names) >= 2
+    for name, rgb in views.items():
+        assert rgb is not None and rgb.dtype == np.uint8, f"{name} rendered nothing"
+    d.draw(env.hud(), views)
+    assert d.screen.get_size() == (render.WINDOW_W, render.WINDOW_H)
+
+
+def test_a_dark_panel_does_not_take_the_window_down(display):
+    """An env whose extra camera returns None still draws the ones that worked."""
+    env, d, render = display
+    d.draw(env.hud(), {"scene": env.frame(320, 240), "wrist": None})
+
+
 def test_render_survives_a_live_step_loop(display):
     env, d, render = display
     for i in range(20):

@@ -41,6 +41,7 @@ if pygame is not None:
     ROLE_BUTTON = {
         "grip": pygame.CONTROLLER_BUTTON_A,
         "reset": pygame.CONTROLLER_BUTTON_Y,
+        "view": pygame.CONTROLLER_BUTTON_X,
         "cam_l": pygame.CONTROLLER_BUTTON_LEFTSHOULDER,
         "cam_r": pygame.CONTROLLER_BUTTON_RIGHTSHOULDER,
         "dpad_l": pygame.CONTROLLER_BUTTON_DPAD_LEFT,
@@ -55,11 +56,11 @@ else:                           # pragma: no cover - no pygame, no real device
 #       mode (Start+A = Apple, Start+B = D-input; XInput is a Windows API and
 #       is useless on macOS), so these are a starting point, not a promise.
 AX_LX, AX_LY, AX_RX, AX_RY = 0, 1, 2, 3
-BTN_GRIP, BTN_RESET, BTN_CAM_L, BTN_CAM_R = 0, 3, 4, 5
+BTN_GRIP, BTN_VIEW, BTN_RESET, BTN_CAM_L, BTN_CAM_R = 0, 2, 3, 4, 5
 BTN_ENV_PREV, BTN_ENV_NEXT = 6, 7          # usually Select/Back and Start
 
 RAW_AXIS = {"lx": AX_LX, "ly": AX_LY, "rx": AX_RX, "ry": AX_RY}
-RAW_BUTTON = {"grip": BTN_GRIP, "reset": BTN_RESET,
+RAW_BUTTON = {"grip": BTN_GRIP, "reset": BTN_RESET, "view": BTN_VIEW,
               "cam_l": BTN_CAM_L, "cam_r": BTN_CAM_R,
               "env_prev": BTN_ENV_PREV, "env_next": BTN_ENV_NEXT}
 # The d-pad is a hat on a raw pad, not two buttons, so it is read separately.
@@ -83,7 +84,9 @@ class ControlInput:
     grip: bool = False          # True = closed
     reset: bool = False
     cam: float = 0.0            # camera orbit, -1..1
-    env: int = 0                # -1 previous environment, +1 next, 0 stay
+    env: int = 0                # -1 previous environment family, +1 next, 0 stay
+    task: int = 0               # -1 previous task in this family, +1 next, 0 stay
+    view: bool = False          # cycle the view layout (single / inset / grid)
 
     def world_xy(self, cam_az: float) -> tuple:
         """Rotate the planar stick input into world x/y.
@@ -105,9 +108,10 @@ class ControlInput:
             mz=float(np.clip(self.mz, -1, 1)), dyaw=float(np.clip(self.dyaw, -1, 1)),
             grip=self.grip, reset=self.reset,
             cam=float(np.clip(self.cam, -1, 1)),
-            # env is a direction, not a magnitude: two devices asking at once
-            # must still step exactly one environment.
-            env=int(np.sign(self.env)))
+            # env and task are directions, not magnitudes: two devices asking
+            # at once must still step exactly one environment, one task.
+            env=int(np.sign(self.env)), task=int(np.sign(self.task)),
+            view=bool(self.view))
 
 
 def deadzone(v: float, d: float = DEADZONE) -> float:
@@ -125,7 +129,8 @@ def merge(a: ControlInput, b: ControlInput) -> ControlInput:
     """
     return ControlInput(a.mx + b.mx, a.my + b.my, a.mz + b.mz, a.dyaw + b.dyaw,
                         a.grip or b.grip, a.reset or b.reset, a.cam + b.cam,
-                        a.env or b.env).clipped()
+                        a.env or b.env, a.task or b.task,
+                        a.view or b.view).clipped()
 
 
 class GamepadReader:
@@ -186,7 +191,7 @@ class GamepadReader:
         return bool(self.pad.get_button(i)) if i < self.pad.get_numbuttons() else False
 
     def _dpad_x(self) -> float:
-        """D-pad left/right, which also orbits. Buttons under SDL, a hat raw."""
+        """D-pad left/right, which steps the task. Buttons under SDL, a hat raw."""
         if self.ctl is not None:
             return float(self._button("dpad_r")) - float(self._button("dpad_l"))
         if not hasattr(self.pad, "get_numhats") or self.pad.get_numhats() < 1:
@@ -206,8 +211,10 @@ class GamepadReader:
             dyaw=deadzone(self._axis("rx")),
             grip=self.closed,
             reset=self._button("reset"),
-            cam=cam + self._dpad_x(),            # bumpers or d-pad, either works
+            cam=cam,
             env=int(self._button("env_next")) - int(self._button("env_prev")),
+            task=int(self._dpad_x()),
+            view=self._button("view"),
         )
 
 
@@ -250,4 +257,6 @@ class KeyboardReader:
             reset=bool(pressed[k.K_r]),
             cam=float(pressed[k.K_RIGHT]) - float(pressed[k.K_LEFT]),
             env=int(bool(pressed[k.K_RIGHTBRACKET])) - int(bool(pressed[k.K_LEFTBRACKET])),
+            task=int(bool(pressed[k.K_PERIOD])) - int(bool(pressed[k.K_COMMA])),
+            view=bool(pressed[k.K_v]),
         )

@@ -26,6 +26,10 @@ MOVE_GAIN = 0.5
 ROUND_SECONDS = 90.0
 SUITES = ("libero_spatial", "libero_object", "libero_goal", "libero_90",
           "libero_10", "libero_100")
+# LIBERO returns rendered cameras in the observation dict as "<name>_image",
+# so the views this env can offer are whatever the task actually rendered --
+# read off the first observation rather than assumed.
+IMAGE_SUFFIX = "_image"
 
 
 class LiberoEnv(TeleopEnv):
@@ -59,6 +63,10 @@ class LiberoEnv(TeleopEnv):
         self._obs = None
         self.reset(full=True)
         self.state_names = tuple(f"obs{i:02d}" for i in range(self.observation().size))
+        found = sorted((k[:-len(IMAGE_SUFFIX)] for k in self._obs
+                        if k.endswith(IMAGE_SUFFIX)),
+                       key=lambda v: (v != "agentview", v))  # agentview stays main
+        self.view_names = tuple(found) or ("agentview",)
 
     def reset(self, full: bool = False) -> None:
         self._obs = self.env.reset()
@@ -98,9 +106,17 @@ class LiberoEnv(TeleopEnv):
                    ee=np.asarray(o.get("robot0_eef_pos", np.zeros(3))),
                    obj=np.zeros(3), task=self.task_name)
 
-    def frame(self, width: int, height: int):
-        img = self._obs.get("agentview_image")
+    def frame(self, width: int, height: int, view: str = None):
+        """LIBERO renders into the observation, so width/height are ignored.
+
+        Camera size is fixed at construction (`image=`), and the display scales
+        whatever it is handed -- there is nothing to re-render here.
+        """
+        img = self._obs.get(f"{view or self.view_names[0]}{IMAGE_SUFFIX}")
         return None if img is None else np.flipud(np.asarray(img, np.uint8)).copy()
+
+    def frames(self, sizes: dict) -> dict:
+        return {v: self.frame(*sizes[v], view=v) for v in sizes}
 
     def close(self) -> None:
         self.env.close()

@@ -56,6 +56,7 @@ python main.py --headless       # scripted pick-and-place, no window, exits 0 on
 python main.py --seed 7         # fixed cube spawns
 python main.py --record         # collect the session into runs/ (off unless asked)
 python main.py --record DIR     # ... into DIR instead
+python main.py --record --record-views all   # ... logging every camera, not just one
 python gamepad_probe.py         # see what your pad reports, and how it is read
 ```
 
@@ -67,8 +68,10 @@ python gamepad_probe.py         # see what your pad reports, and how it is read
 | raise / lower | right stick Y | `Q` / `E` |
 | rotate wrist | right stick X | `Z` / `C` |
 | gripper | `A` (toggle) | `SPACE` (hold) |
-| orbit camera | `LB` / `RB`, or d-pad ← → | `←` / `→` |
-| switch environment | `Back` / `Start` | `[` / `]` |
+| orbit camera | `LB` / `RB` | `←` / `→` |
+| cycle view layout | `X` | `V` |
+| switch task | d-pad ← → | `,` / `.` |
+| switch environment family | `Back` / `Start` | `[` / `]` |
 | reset round | `Y` | `R` |
 | quit | — | `ESC` |
 
@@ -88,6 +91,29 @@ config block to edit at the top of `input.py`.
 **Only the native arm has a camera you can orbit.** The benchmark families
 render from a fixed camera their own adapter picks, so `LB`/`RB` and the arrow
 keys do nothing there — by design, not because the buttons are unmapped.
+
+## Views
+
+`X` on the pad (or `V`) cycles three layouts:
+
+| layout | what it shows |
+|---|---|
+| `single` | the operator's own view, full width |
+| `inset` | that view, with the other cameras stacked down the right edge |
+| `grid` | up to four cameras tiled 2×2, all the same size |
+
+The native arm has four: `scene` (the free camera you orbit), `wrist`
+(eye-in-hand, mounted beside the gripper), `front`, and `top`. A benchmark
+offers whatever cameras its own model has — robosuite adds `robot0_eye_in_hand`,
+`frontview` and `birdview` where the task defines them, LIBERO offers the
+cameras it rendered into the observation, and Meta-World and Fetch have exactly
+one each. An environment with one camera always draws it full width, so cycling
+the layout there does nothing.
+
+Each view is rendered at exactly the panel size it will be drawn into, so
+`inset` costs one big frame plus three small ones rather than four big ones. The
+cameras are declared in the MJCF (`scene.py`), not built in code, so anything
+else that loads the model sees the same views.
 
 ## Layout
 
@@ -109,11 +135,11 @@ runs headless. See `CLAUDE.md` for the physics constraints that must not be
 ## Tests
 
 ```sh
-python -m pytest -q          # 134 tests, ~10 s, no display and no gamepad needed
+python -m pytest -q          # 169 tests, ~10 s, no display and no gamepad needed
 ```
 
 Benchmark tests skip cleanly when the benchmark isn't installed, so a bare
-checkout stays green (134 passed / 10 skipped).
+checkout stays green (169 passed / 13 skipped).
 
 Physics tests assert on numbers — contact count, joint velocity, tracking error,
 cube height, score — and the grasp tests are parametrised over 12 random spawns,
@@ -128,11 +154,20 @@ control tick — `observation.state` (6 joints + gripper + cube xyz), `action`
 
 ```
 DIR/data/chunk-000/episode_000000.parquet
-DIR/images/observation.images.cam/episode_000000/frame_%06d.png
+DIR/images/observation.images.scene/episode_000000/frame_%06d.png
 DIR/meta/{info,episodes,tasks,episodes_stats}.{json,jsonl}
 ```
 
 which is the shape `lerobot` expects for training an ACT policy.
+
+`--record-views` chooses the cameras: `main` (the default — the operator's own
+view), `all`, or a comma-separated list such as `scene,wrist`. Each view becomes
+its own `observation.images.<view>` column with its own PNG per tick, which is
+how LeRobot describes a multi-camera rig.
+
+Recorded frames are **not** the ones on screen. They are rendered separately at
+a fixed 320×240, because a dataset column has one image shape for the whole
+episode and the operator can change the layout mid-round.
 
 ### Example: collect an episode and read it back
 
@@ -160,13 +195,24 @@ import pyarrow.parquet as pq
 t = pq.read_table("runs/data/chunk-000/episode_000000.parquet")
 print(t.num_rows, t.column_names)
 # 1680 ['observation.state', 'action', 'timestamp', 'frame_index',
-#       'episode_index', 'index', 'task_index', 'observation.images.cam']
+#       'episode_index', 'index', 'task_index', 'observation.images.scene']
 t.slice(900, 1).to_pylist()[0]
 # {'observation.state': [0.777, 0.016, 1.289, 1.842, 0.201, -0.001,   # j1..j6
 #                        0.016, 0.16, 0.158, 0.293],                  # grip, cube xyz
 #  'action': [0.0, 0.0, 0.0, 0.0, 1.0],                               # dx dy dz dyaw grip
 #  'timestamp': 9.0, 'frame_index': 900, 'episode_index': 0,
-#  'observation.images.cam': 'images/.../frame_000900.png'}
+#  'observation.images.scene': 'images/.../frame_000900.png'}
+```
+
+The same run with every camera gives one image column per view:
+
+```sh
+python main.py --headless --seed 2 --record runs/ --record-views all
+# recording views: scene, wrist, front, top
+# recorded    1680 ticks -> runs/data/chunk-000/episode_000000.parquet
+ls runs/images
+# observation.images.front  observation.images.scene
+# observation.images.top    observation.images.wrist
 ```
 
 `meta/` carries what a `LeRobotDataset` reads at load time — `info.json` (fps
@@ -186,10 +232,11 @@ Two things to know before collecting in bulk:
   reading the directory, not from a counter, so recording into the same `DIR`
   across separate runs of the program appends `episode_000001`,
   `episode_000002`, … and `meta/` stays consistent with them.
-- **Frames dominate the size.** One PNG per 100 Hz tick is ~37 KB, so the 16.8 s
-  episode above is 63 MB and a 90 s round is ~340 MB. `EpisodeRecorder` accepts
-  frames at a lower rate (pass `None` on the ticks you skip; the image column
-  repeats the last frame to stay 1:1 with the ticks).
+- **Frames dominate the size.** One 320×240 PNG per 100 Hz tick is ~37 KB, so
+  the 16.8 s episode above is 63 MB for one camera, 210 MB for all four, and a
+  90 s round is ~340 MB per camera. `EpisodeRecorder` accepts frames at a lower
+  rate (pass `None` on the ticks you skip; each image column repeats its last
+  frame to stay 1:1 with the ticks), and `--record-views` is the other dial.
 
 ## Benchmarks
 
@@ -208,19 +255,28 @@ gripper-sign table and two other install landmines.
 
 ### Switching without restarting
 
-`[` / `]` on the keyboard, or `Back` / `Start` on the pad, cycles through the
-families that are actually installed — `--list-envs` shows the ring, and a
-family you have not installed is never in it. The task resets to that family's
-default, because a task id from one family means nothing in the next.
+Two rings, because they are different moves.
+
+`[` / `]` on the keyboard, or `Back` / `Start` on the pad, cycles the **family**
+— the robot and the adapter. Only families that are actually installed are in
+it; `--list-envs` shows the ring, and one you have not installed is never in it.
+The task resets to that family's default, because a task id from one family
+means nothing in the next.
+
+`,` / `.` on the keyboard, or the **d-pad**, cycles the **task** inside the
+family you are on: `Lift` → `Stack` → `PickPlaceCan` → … The ring is that
+family's task list in `--list-envs`. The native arm has one scene, so it says so
+instead of rebuilding the same environment.
 
 A switch tears down the old environment and builds the new one, so it is not
 instant; the window title and the HUD both name the environment you are on. If
 a backend fails to build (a bad install, an asset download that hasn't run), the
 session says so and stays on the environment you were already driving.
 
-While recording, a switch **closes the current episode and opens the next one**
-— the two environments have different `observation.state` widths, so they must
-not share a parquet.
+While recording, either switch **closes the current episode and opens the next
+one** — the two environments have different `observation.state` widths and
+different objects in them, so they must not share a parquet. The new episode
+also picks up the new environment's cameras.
 
 ## Note
 

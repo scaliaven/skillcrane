@@ -22,6 +22,12 @@ GRIP_CLOSE = +1.0          # measured: action[-1]=+1 drives the fingers shut
 MOVE_GAIN = 0.5            # stick -> normalised OSC delta
 ROUND_SECONDS = 90.0
 
+# Extra cameras to offer beside the main one. Which of these exist depends on
+# the task XML and the robot, so they are probed at construction rather than
+# assumed -- `robot0_eye_in_hand` comes from the robot model, the rest from the
+# arena, and a task that lacks one must not leave a dead panel on screen.
+CANDIDATE_VIEWS = ("robot0_eye_in_hand", "frontview", "birdview")
+
 
 class RobosuiteEnv(TeleopEnv):
     action_names = ("dx", "dy", "dz", "dyaw", "grip")
@@ -38,7 +44,8 @@ class RobosuiteEnv(TeleopEnv):
         self.env = suite.make(
             env_name=task, robots=robot, controller_configs=cfg,
             has_renderer=False, has_offscreen_renderer=True, use_camera_obs=False,
-            camera_names=camera, control_freq=control_freq, horizon=10 ** 6,
+            camera_names=[camera, *CANDIDATE_VIEWS],
+            control_freq=control_freq, horizon=10 ** 6,
             ignore_done=True, reward_shaping=True,
         )
         self.rng = np.random.default_rng(seed)
@@ -47,6 +54,15 @@ class RobosuiteEnv(TeleopEnv):
         self.closed = False
         self.reset(full=True)
         self.state_names = tuple(f"obs{i:02d}" for i in range(self.observation().size))
+        self.view_names = (camera,) + tuple(v for v in CANDIDATE_VIEWS
+                                            if self._renderable(v))
+
+    def _renderable(self, view: str) -> bool:
+        """Can this model render `view`? Asked once, with a tiny frame."""
+        try:
+            return self.frame(32, 32, view=view) is not None
+        except Exception:
+            return False
 
     # -- state ---------------------------------------------------------------
     def reset(self, full: bool = False) -> None:
@@ -90,9 +106,13 @@ class RobosuiteEnv(TeleopEnv):
                    grip="CLOSED" if self.closed else "OPEN",
                    ee=ee, obj=obj, task=self.task_name)
 
-    def frame(self, width: int, height: int):
-        img = self.env.sim.render(width=width, height=height, camera_name=self.camera)
+    def frame(self, width: int, height: int, view: str = None):
+        img = self.env.sim.render(width=width, height=height,
+                                  camera_name=view or self.camera)
         return np.flipud(img).copy()          # MuJoCo renders bottom-up
+
+    def frames(self, sizes: dict) -> dict:
+        return {v: self.frame(*sizes[v], view=v) for v in sizes}
 
     def close(self) -> None:
         self.env.close()

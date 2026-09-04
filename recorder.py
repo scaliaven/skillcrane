@@ -1,9 +1,14 @@
 """M7 (stretch): log teleop episodes in LeRobot's dataset layout.
 
 One row per control tick -- observation.state, the action that was applied, and
-the rendered camera frame -- written as LeRobot v2.1: parquet under data/, PNG
+the rendered camera frames -- written as LeRobot v2.1: parquet under data/, PNG
 frames under images/, and the meta/ sidecars a LeRobotDataset needs to load.
 That is the shape `lerobot/scripts/train.py --policy.type=act` expects.
+
+A tick can carry more than one camera: pass `add()` a {view: frame} dict and
+each view becomes its own `observation.images.<view>` column, which is how
+LeRobot names a multi-camera rig. One array is still one camera, under
+`image_key`.
 
 pyarrow and Pillow are only imported here, and only when --record is used, so
 the core game keeps its three dependencies.
@@ -17,6 +22,8 @@ import scene
 
 FPS = int(round(1.0 / scene.CTRL_DT))
 TASK = "Pick up the cube and place it in the target zone."
+
+IMAGE_PREFIX = "observation.images."
 
 # observation.state = 6 arm joints + gripper opening + cube xyz  (see Game.observation)
 STATE_NAMES = [f"j{i}" for i in range(1, 7)] + ["grip", "cube_x", "cube_y", "cube_z"]
@@ -69,9 +76,31 @@ class EpisodeRecorder:
         return len(self.states)
 
     def add(self, state, action, frame=None) -> None:
+        """One control tick. `frame` is an RGB array, or {view: RGB}, or None."""
         self.states.append(np.asarray(state, dtype=np.float32))
         self.actions.append(np.asarray(action, dtype=np.float32))
-        self.frames.append(None if frame is None else np.asarray(frame, dtype=np.uint8))
+        self.frames.append(self._views(frame))
+
+    def _views(self, frame) -> dict:
+        """Normalise a tick's frames to {image key: array}, dropping empties."""
+        if frame is None:
+            return {}
+        if isinstance(frame, dict):
+            return {self.image_column(k): np.asarray(v, dtype=np.uint8)
+                    for k, v in frame.items() if v is not None}
+        return {self.image_key: np.asarray(frame, dtype=np.uint8)}
+
+    @staticmethod
+    def image_column(view: str) -> str:
+        """LeRobot column for a camera: "wrist" -> observation.images.wrist."""
+        return view if view.startswith(IMAGE_PREFIX) else IMAGE_PREFIX + view
+
+    def image_keys(self) -> list:
+        """Every image column recorded, in the order the views first appeared."""
+        keys = {}
+        for tick in self.frames:
+            keys.update(dict.fromkeys(tick))
+        return list(keys)
 
     # -- output ---------------------------------------------------------------
     def save(self) -> Path:
@@ -99,42 +128,48 @@ class EpisodeRecorder:
             "index": list(range(n)),
             "task_index": [0] * n,
         }
-        if img_paths:
-            cols[self.image_key] = img_paths
+        cols.update(img_paths)
         table = pa.table(cols)
         out = data_dir / f"episode_{ep:06d}.parquet"
         pq.write_table(table, out)
 
-        self._write_meta(ep, n, bool(img_paths))
+        self._write_meta(ep, n, list(img_paths))
         return out
 
-    def _write_frames(self, ep: int) -> list:
-        """PNG per tick. Returns dataset-relative paths, or [] if none captured."""
-        if not any(f is not None for f in self.frames):
-            return []
+    def _write_frames(self, ep: int) -> dict:
+        """PNG per tick per camera. Returns {column: paths}, empty if none."""
+        keys = self.image_keys()
+        if not keys:
+            return {}
         from PIL import Image
 
-        rel_dir = Path("images") / self.image_key / f"episode_{ep:06d}"
-        (self.root / rel_dir).mkdir(parents=True, exist_ok=True)
-        paths = []
-        last = None
-        for i, f in enumerate(self.frames):
-            if f is not None:
-                last = f
-            rel = rel_dir / f"frame_{i:06d}.png"
-            # A tick with no new frame reuses the previous one, so the image
-            # column stays aligned 1:1 with the control ticks.
-            Image.fromarray(last).save(self.root / rel)
-            paths.append(str(rel))
-        return paths
+        cols = {}
+        for key in keys:
+            rel_dir = Path("images") / key / f"episode_{ep:06d}"
+            (self.root / rel_dir).mkdir(parents=True, exist_ok=True)
+            paths, last = [], None
+            for i, tick in enumerate(self.frames):
+                last = tick.get(key, last)
+                if last is None:
+                    # This camera has not produced anything yet, so there is no
+                    # image to point at. Leave the cell null rather than
+                    # inventing one; the column still lines up with the ticks.
+                    paths.append(None)
+                    continue
+                rel = rel_dir / f"frame_{i:06d}.png"
+                # A tick with no new frame reuses the previous one, so the image
+                # column stays aligned 1:1 with the control ticks.
+                Image.fromarray(last).save(self.root / rel)
+                paths.append(str(rel))
+            cols[key] = paths
+        return cols
 
-    def _write_meta(self, ep: int, n: int, has_images: bool) -> None:
+    def _write_meta(self, ep: int, n: int, image_keys: list) -> None:
         meta = self.root / "meta"
-        h, w, c = (0, 0, 0)
-        for f in self.frames:
-            if f is not None:
-                h, w, c = f.shape
-                break
+        shapes = {}
+        for tick in self.frames:
+            for key, f in tick.items():
+                shapes.setdefault(key, f.shape)
 
         features = {
             "observation.state": {"dtype": "float32", "shape": [len(self.state_names)],
@@ -147,10 +182,10 @@ class EpisodeRecorder:
             "index": {"dtype": "int64", "shape": [1], "names": None},
             "task_index": {"dtype": "int64", "shape": [1], "names": None},
         }
-        if has_images:
-            features[self.image_key] = {
-                "dtype": "image", "shape": [h, w, c],
-                "names": ["height", "width", "channel"]}
+        for key in image_keys:
+            h, w, c = shapes.get(key, (0, 0, 0))
+            features[key] = {"dtype": "image", "shape": [h, w, c],
+                             "names": ["height", "width", "channel"]}
 
         info = {
             "codebase_version": "v2.1",

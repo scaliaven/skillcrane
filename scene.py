@@ -49,6 +49,12 @@ HOME_SEED = np.array([0.0, 0.5, 1.3, 1.34, 0.0, 0.0])   # IK seed for HOME
 
 ROUND_SECONDS = 90.0
 
+# --- Cameras -----------------------------------------------------------------
+# Fixed cameras declared in the MJCF, in the order the multi-view layouts show
+# them. The orbiting free camera is not one of these -- it lives in
+# benchmarks/native.py, because it is a view-state thing, not model data.
+CAMERAS = ("wrist", "front", "top")
+
 ARM_JOINTS = ("j1", "j2", "j3", "j4", "j5", "j6")
 GRIP_JOINTS = ("gL", "gR")
 NARM = len(ARM_JOINTS)
@@ -129,7 +135,20 @@ def build_xml(offwidth: int = OFF_W, offheight: int = OFF_H) -> str:
                   <joint name="j6" axis="0 1 0" range="-2.0 2.0"/>
                   <geom type="box" size="0.045 0.022 0.020" pos="0 0 0.020"
                         rgba="0.35 0.38 0.44 1" mass="0.3"/>
-                  <site name="grip" pos="0 0 0.070" size="0.008" rgba="1 0.4 0.2 1"/>
+                  <!-- TCP marker, in site group 3. MuJoCo hides groups 3+ by
+                       default, so it appears only where a renderer opts in:
+                       the operator's orbit view does, the eye-in-hand camera
+                       does not -- at 5 cm this dot covers exactly the thing
+                       the gripper is reaching for. The drop-zone site stays in
+                       group 0 and is visible everywhere. -->
+                  <site name="grip" pos="0 0 0.070" size="0.008" rgba="1 0.4 0.2 1"
+                        group="3"/>
+                  <!-- Eye-in-hand view. A MuJoCo camera looks down its own -z
+                       with +y up, so xyaxes aims this one from beside the
+                       wrist at the grip site: right = hand +x (the finger
+                       separation axis), up tilted to match. -->
+                  <camera name="wrist" pos="0 -0.10 0.015" fovy="70"
+                          xyaxes="1 0 0  0 -0.65 0.76"/>
                   <!-- joint value 0 = fully OPEN; increasing closes -->
                   <body name="fL" pos="0 0 0.040">
                     <joint name="gL" type="slide" axis="1 0 0" range="0 {GRIP_RANGE}"
@@ -159,6 +178,12 @@ def build_xml(offwidth: int = OFF_W, offheight: int = OFF_H) -> str:
 
     <site name="target" pos="{TARGET_XY[0]} {TARGET_XY[1]} 0.002" size="{TARGET_R} 0.001"
           type="cylinder" rgba="0.30 0.85 0.55 0.35"/>
+
+    <!-- Named here rather than built in code, so every renderer that loads this
+         MJCF -- ours and anyone else's -- sees the same views. -->
+    <camera name="front" pos="0.95 0 0.45" fovy="50"
+            xyaxes="0.12 0.99 0  -0.33 0.04 0.94"/>
+    <camera name="top" pos="0.15 0.10 1.15" fovy="45" xyaxes="1 0 0  0 1 0"/>
   </worldbody>
 
   <actuator>

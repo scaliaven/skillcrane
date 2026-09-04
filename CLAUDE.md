@@ -26,10 +26,11 @@ skillcrane/
   game.py         Game: physics, scoring, spawn logic. NO pygame import.
   input.py        GamepadReader + KeyboardReader -> a common ControlInput dataclass
                   (SDL standard layout when available, raw indices otherwise)
-  render.py       offscreen render + HUD drawing
+  render.py       offscreen render + HUD drawing + multi-view layouts
   recorder.py     LeRobot-format episode logging (optional deps)
   benchmarks/     adapters: native, robosuite, Meta-World, Fetch, LIBERO
-  main.py         CLI entry: --headless, --seed, --record, --env, --list-envs
+  main.py         CLI entry: --headless, --seed, --record, --record-views,
+                  --env, --list-envs
   tests/
 ```
 
@@ -46,6 +47,28 @@ display. `tests/test_no_pygame.py` enforces this in a subprocess where
 Note the dependency direction: `game.py` never imports `input.py`. `Game.step`
 takes plain world-frame floats, and the camera-relative rotation lives in
 `ControlInput.world_xy` on the input side.
+
+### Cameras and views
+
+An env declares `view_names` (operator's view first) and answers
+`frames({view: (w, h)})`. `render.py` decides the layout, computes the panel
+rects, and asks for exactly those sizes -- nothing is rendered large and then
+thrown away, and a one-camera env simply gets one full-width panel.
+
+Two settled details behind the native cameras:
+
+- **They live in the MJCF, not in code.** `scene.CAMERAS` names them; anything
+  that loads the model gets the same views. Only the orbiting `scene` camera is
+  a code-side `MjvCamera`, because it is view *state*, not model data.
+- **The TCP marker is site group 3, and MuJoCo hides groups 3+ by default.**
+  `NativeEnv` re-enables it for the operator's view only. In the wrist camera,
+  5 cm away, that 8 mm dot covers exactly the object being grasped -- it would
+  be in the middle of every recorded eye-in-hand frame.
+
+Recording is deliberately decoupled from the window: `--record-views` renders
+its own frames at a fixed 320x240, because a dataset column has one image shape
+for the whole episode and the operator can change the layout mid-round. Each
+view becomes its own `observation.images.<view>` column.
 
 ## Non-negotiable constraints
 
@@ -111,13 +134,13 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 | M2 | stable tracking | `test_m2_tracking.py` | 6 passed |
 | M3 | grasping (12 seeds) | `test_m3_grasp.py` | 19 passed |
 | M4 | game rules | `test_m4_rules.py` | 17 passed |
-| M5 | input layer | `test_m5_input.py` | 43 passed |
-| M6 | render + HUD | `test_m6_render.py` | 7 passed |
-| M7 | recording (stretch) | `test_m7_record.py` | 10 passed |
-| M8 | benchmark adapters | `test_benchmarks.py` | 16 passed, 10 skipped |
+| M5 | input layer | `test_m5_input.py` | 48 passed |
+| M6 | render + HUD | `test_m6_render.py` | 14 passed |
+| M7 | recording (stretch) | `test_m7_record.py` | 17 passed |
+| M8 | benchmark adapters | `test_benchmarks.py` | 32 passed, 13 skipped |
 | — | hard rule | `test_no_pygame.py` | 4 passed |
 
-Totals: **134 passed / 10 skipped** with no benchmarks installed. The counts
+Totals: **169 passed / 13 skipped** with no benchmarks installed. The counts
 with the benchmark families installed have not been re-measured since the
 switching work.
 
@@ -158,6 +181,11 @@ block at the top of `input.py`** — never scattered. `GamepadReader` reads by
 role (`"grip"`, `"cam_l"`), so neither table leaks into the read path.
 `gamepad_probe.py` reports which path is live, what `input.py` makes of each
 control next to the raw numbers, and the block to edit if the layout is raw.
+
+Roles as bound: A grip, X view layout, Y reset, LB/RB orbit, d-pad task,
+Back/Start environment family. The d-pad used to double as orbit; it steps the
+task now, and the bumpers keep the camera. The d-pad is two buttons under SDL
+and a *hat* on a raw pad, which is why `_dpad_x()` reads it separately.
 
 Pairing modes still matter for the fallback: Apple (hold Start+A on power-on),
 D-input (Start+B); XInput is a Windows API and is useless here. Some models,

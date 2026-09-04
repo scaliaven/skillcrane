@@ -230,3 +230,163 @@ def test_cycle_drops_the_task_because_it_means_nothing_next_door():
 
 def test_cycle_from_an_unknown_family_does_not_strand_the_operator():
     assert benchmarks.cycle("nosuchthing:x", 1) in benchmarks.switchable()
+
+
+# --- switching the task inside a family -------------------------------------
+
+def test_cycle_task_stays_in_the_family_and_walks_its_tasks():
+    ring = list(FAMILIES["robosuite"].tasks)
+    spec = f"robosuite:{ring[0]}"
+    seen = [spec]
+    for _ in range(len(ring)):
+        spec = benchmarks.cycle_task(spec, 1)
+        seen.append(spec)
+    assert all(s.startswith("robosuite:") for s in seen)
+    assert seen[-1] == seen[0], "stepping the whole list wraps back"
+    assert {s.split(":")[1] for s in seen} == set(ring)
+
+
+def test_cycle_task_backwards_is_the_inverse():
+    spec = "metaworld:push-v3"
+    assert benchmarks.cycle_task(benchmarks.cycle_task(spec, 1), -1) == spec
+
+
+def test_cycle_task_does_nothing_for_a_family_with_one_setting():
+    """The native arm has one scene, so the caller can say so instead of
+    silently rebuilding the identical environment."""
+    assert benchmarks.cycle_task(NATIVE, 1) == NATIVE
+    assert benchmarks.cycle_task("nosuchthing:x", 1) == "nosuchthing:x"
+
+
+def test_cycle_task_from_a_hand_typed_task_lands_on_the_ring():
+    spec = benchmarks.cycle_task("libero:libero_90/17", 1)
+    assert spec.split(":")[1] in FAMILIES["libero"].tasks
+
+
+def test_tasks_reports_what_the_task_ring_holds():
+    assert benchmarks.tasks("robosuite:Lift") == FAMILIES["robosuite"].tasks
+    assert benchmarks.tasks("nosuchthing") == ()
+
+
+# --- multiple camera views --------------------------------------------------
+
+def test_every_env_declares_at_least_one_view():
+    assert TeleopEnv.view_names and len(TeleopEnv.view_names) >= 1
+
+
+def test_native_offers_the_orbit_camera_plus_the_mjcf_ones(native):
+    assert native.view_names[0] == "scene", "the operator's view comes first"
+    assert set(scene.CAMERAS) <= set(native.view_names)
+
+
+def test_native_renders_each_view_at_the_size_it_was_asked_for(native):
+    sizes = {"scene": (96, 64), "wrist": (48, 32), "top": (64, 64)}
+    try:
+        views = native.frames(sizes)
+    except Exception as exc:                    # no GL context on this box
+        pytest.skip(f"no offscreen renderer here: {exc}")
+    for name, (w, h) in sizes.items():
+        assert views[name].shape == (h, w, 3), f"{name} came back the wrong size"
+        assert views[name].max() > 0, f"{name} is entirely black"
+    assert not np.array_equal(views["scene"][:32, :32], views["top"][:32, :32]), \
+        "two cameras returned the same image"
+    native.close()
+
+
+def test_a_single_view_env_leaves_the_other_panels_dark():
+    """The contract's default: one camera, and anything else comes back None."""
+    class OneCamera(TeleopEnv):
+        def reset(self, full=False): pass
+        def step(self, *a): return False
+        def observation(self): return np.zeros(1)
+        def hud(self): return Hud()
+        def frame(self, width, height):
+            return np.zeros((height, width, 3), np.uint8)
+
+    views = OneCamera().frames({"main": (8, 8), "wrist": (4, 4)})
+    assert views["main"].shape == (8, 8, 3)
+    assert views["wrist"] is None
+
+
+# --- the live session: what main.py does with all of the above --------------
+
+@pytest.fixture
+def session_env():
+    env = benchmarks.make(NATIVE, seed=0)
+    yield env
+    env.close()
+
+
+def test_record_views_main_is_the_operators_view_only(session_env):
+    import main
+    sizes = main._record_sizes(session_env, "main")
+    assert list(sizes) == [session_env.view_names[0]]
+    assert set(sizes.values()) == {(main.RECORD_W, main.RECORD_H)}
+
+
+def test_record_views_all_takes_every_camera(session_env):
+    import main
+    assert list(main._record_sizes(session_env, "all")) == list(session_env.view_names)
+
+
+def test_record_views_accepts_a_list_of_names(session_env):
+    import main
+    assert list(main._record_sizes(session_env, "wrist,top")) == ["wrist", "top"]
+
+
+def test_record_views_says_so_when_a_camera_does_not_exist(session_env, capsys):
+    """A typo must not look like a camera that quietly recorded nothing."""
+    import main
+    assert main._record_sizes(session_env, "wrst") == {}
+    assert "no camera named wrst" in capsys.readouterr().out
+
+
+def test_switching_nowhere_keeps_the_session_and_says_why(session_env, capsys):
+    import main
+    s = main.Session(session_env, NATIVE)
+    same = main._switch(s, NATIVE, 0, None, "main", nothing="only native here")
+    assert same is s
+    assert "only native here" in capsys.readouterr().out
+
+
+def test_a_backend_that_fails_to_build_does_not_end_the_session(session_env, capsys):
+    import main
+    s = main.Session(session_env, NATIVE)
+    kept = main._switch(s, "nosuchthing:x", 0, None, "main", nothing="")
+    assert kept is s, "a bad install must not take the live session down"
+    assert "could not switch" in capsys.readouterr().out
+
+
+def test_switching_closes_the_episode_and_opens_the_next(tmp_path, monkeypatch):
+    """The two environments have different columns, so they cannot share one file."""
+    pytest.importorskip("pyarrow")
+    import main
+    from benchmarks.registry import _native
+
+    env = benchmarks.make(NATIVE, seed=0)
+    s = main._session(env, NATIVE, tmp_path, "main")
+    s.rec.add(env.observation(), np.zeros(5))
+    monkeypatch.setattr(benchmarks, "make", lambda spec, seed=0: _native(None, seed))
+
+    after = main._switch(s, "native:next", 0, tmp_path, "main", nothing="")
+    assert after.spec == "native:next"
+    assert (tmp_path / "data" / "chunk-000" / "episode_000000.parquet").exists()
+    assert after.rec.episode_index == s.rec.episode_index + 1
+    assert len(after.rec) == 0, "the new episode starts empty"
+    after.env.close()
+
+
+@pytest.mark.parametrize("family", SHAREABLE)
+def test_installed_benchmark_renders_every_view_it_declares(family):
+    if not benchmarks.installed(family):
+        pytest.skip(f"{family} not installed")
+    env = benchmarks.make(family, seed=0)
+    try:
+        assert env.view_names, "an env must declare at least one view"
+        views = env.frames({v: (96, 96) for v in env.view_names})
+        assert set(views) == set(env.view_names)
+        for name, rgb in views.items():
+            assert rgb is not None, f"{family} declares {name} but renders nothing"
+            assert rgb.ndim == 3 and rgb.dtype == np.uint8
+    finally:
+        env.close()

@@ -46,6 +46,12 @@ class TeleopEnv(ABC):
     #: Camera azimuth in degrees, used to rotate the sticks into the world
     #: frame. Benchmarks have fixed cameras; only the native env orbits.
     azimuth: float = 0.0
+    #: Camera views this env can render, operator's main view first. The
+    #: display shows as many as its current layout has room for, so an env with
+    #: one camera simply keeps drawing one panel -- there is nothing to declare
+    #: and nothing to switch off. Names are recorded as image keys, so they
+    #: should be the benchmark's own camera names where it has them.
+    view_names: tuple = ("main",)
 
     def orbit(self, degrees: float) -> None:
         """Rotate the camera, where the env has one that can move."""
@@ -72,8 +78,22 @@ class TeleopEnv(ABC):
         """Current scoreboard, for the HUD."""
 
     def frame(self, width: int, height: int):
-        """An RGB uint8 frame, or None if this env cannot render offscreen."""
+        """An RGB uint8 frame of the main view, or None if it cannot render."""
         return None
+
+    def frames(self, sizes: dict) -> dict:
+        """{view: RGB} for the requested views. `sizes` maps view -> (w, h).
+
+        Sizes are per view because the display asks for exactly the panel it
+        will blit into: rendering a 900-wide main view and three 220-wide
+        insets is much cheaper than rendering four big frames and scaling.
+
+        The default assumes one camera, so anything but the main view comes
+        back None and the display leaves that panel dark. Envs with more
+        cameras override this and declare them in `view_names`.
+        """
+        main = self.view_names[0]
+        return {v: (self.frame(*sizes[v]) if v == main else None) for v in sizes}
 
     def close(self) -> None:
         pass

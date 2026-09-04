@@ -191,6 +191,35 @@ def cycle(spec: str, step: int = 1) -> str:
     return ring[0]
 
 
+def tasks(spec: str) -> tuple:
+    """The task ids registered for `spec`'s family, or () if it has none."""
+    fam = FAMILIES.get(parse(spec)[0])
+    return fam.tasks if fam else ()
+
+
+def cycle_task(spec: str, step: int = 1) -> str:
+    """The next task *within* the current family, e.g. Lift -> Stack.
+
+    Switching family is a different move (`cycle`): this one keeps the robot and
+    the adapter and changes the setting, which is what "try the same rig on the
+    next task" means. Families list a few known-good task ids each, and that
+    list is the ring. A family with fewer than two -- the native arm has one
+    scene -- returns `spec` unchanged, so the caller can say so instead of
+    silently rebuilding the identical environment.
+
+    A task id that is not on the list (a hand-typed `--env libero:libero_90/17`)
+    is treated as position 0, so stepping forward lands on the second entry
+    rather than stranding the operator outside the ring.
+    """
+    family, task = parse(spec)
+    fam = FAMILIES.get(family)
+    if fam is None or len(fam.tasks) < 2:
+        return spec
+    ids = list(fam.tasks)
+    i = ids.index(task) if task in ids else 0
+    return f"{family}:{ids[(i + step) % len(ids)]}"
+
+
 def describe() -> str:
     """Human-readable table for --list-envs."""
     rows = []
@@ -208,4 +237,5 @@ def describe() -> str:
     return "\n".join(
         ["Environments  ([ ok ] installed, [  - ] available, [n/a ] not teleoperable)", ""]
         + rows
-        + ["", "Use:  python main.py --env robosuite:Lift"])
+        + ["", "Use:  python main.py --env robosuite:Lift",
+           "      [ / ] switches family in a live session, , / . switches task"])

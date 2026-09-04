@@ -295,10 +295,22 @@ def test_controller_ignores_the_raw_indices_entirely():
     assert ci.cam == 0.0 and ci.grip is False
 
 
-def test_controller_dpad_also_orbits():
+def test_controller_dpad_steps_the_task():
+    """The d-pad walks the task ring; the bumpers keep the camera."""
     ctl = FakeController()
     ctl.buttons[pygame.CONTROLLER_BUTTON_DPAD_RIGHT] = True
-    assert GamepadReader(FakePad(), ctl=ctl).read().cam == pytest.approx(1.0)
+    ci = GamepadReader(FakePad(), ctl=ctl).read()
+    assert ci.task == 1 and ci.cam == 0.0
+    ctl.buttons[pygame.CONTROLLER_BUTTON_DPAD_RIGHT] = False
+    ctl.buttons[pygame.CONTROLLER_BUTTON_DPAD_LEFT] = True
+    assert GamepadReader(FakePad(), ctl=ctl).read().task == -1
+
+
+def test_controller_x_cycles_the_view_layout():
+    ctl = FakeController()
+    assert GamepadReader(FakePad(), ctl=ctl).read().view is False
+    ctl.buttons[pygame.CONTROLLER_BUTTON_X] = True
+    assert GamepadReader(FakePad(), ctl=ctl).read().view is True
 
 
 def test_standard_flag_says_which_path_is_live():
@@ -322,12 +334,45 @@ class FakeHatPad(FakePad):
         return self.hats[i]
 
 
-def test_raw_dpad_hat_orbits():
-    assert GamepadReader(FakeHatPad(hat=(1, 0))).read().cam == pytest.approx(1.0)
-    assert GamepadReader(FakeHatPad(hat=(-1, 0))).read().cam == pytest.approx(-1.0)
-    assert GamepadReader(FakeHatPad(hat=(0, 1))).read().cam == 0.0
+def test_raw_dpad_hat_steps_the_task():
+    assert GamepadReader(FakeHatPad(hat=(1, 0))).read().task == 1
+    assert GamepadReader(FakeHatPad(hat=(-1, 0))).read().task == -1
+    assert GamepadReader(FakeHatPad(hat=(0, 1))).read().task == 0, \
+        "up/down on the hat is not a task step"
 
 
 def test_a_pad_with_no_hat_does_not_crash():
     """FakePad has no get_numhats at all, like a minimal joystick."""
-    assert GamepadReader(FakePad()).read().cam == 0.0
+    ci = GamepadReader(FakePad()).read()
+    assert ci.cam == 0.0 and ci.task == 0
+
+
+# --- switching environment, task and view -----------------------------------
+
+def test_task_and_view_default_to_doing_nothing():
+    ci = GamepadReader(FakePad()).read()
+    assert (ci.env, ci.task, ci.view) == (0, 0, False)
+    assert KeyboardReader().read(keys()).task == 0
+
+
+def test_keyboard_steps_the_task_and_cycles_views():
+    r = KeyboardReader()
+    assert r.read(keys(pygame.K_PERIOD)).task == 1
+    assert r.read(keys(pygame.K_COMMA)).task == -1
+    assert r.read(keys(pygame.K_v)).view is True
+    assert r.read(keys(pygame.K_w)).view is False
+
+
+def test_merging_two_devices_still_steps_exactly_one_task():
+    """Both devices asking at once must not skip a task."""
+    both = merge(ControlInput(task=1), ControlInput(task=1))
+    assert both.task == 1
+    assert merge(ControlInput(task=-1), ControlInput()).task == -1
+    assert merge(ControlInput(view=True), ControlInput()).view is True
+
+
+def test_the_view_button_is_not_the_grip_button():
+    """A layout cycle that also opened the gripper would drop the payload."""
+    assert inp.BTN_VIEW != inp.BTN_GRIP
+    assert inp.ROLE_BUTTON["view"] not in (inp.ROLE_BUTTON["grip"],
+                                           inp.ROLE_BUTTON["reset"])
