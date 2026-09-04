@@ -34,6 +34,18 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Or with conda:
+
+```sh
+CONDA_SUBDIR=osx-arm64 conda env create -f environment.yml
+conda activate skillcrane
+```
+
+The `CONDA_SUBDIR` prefix matters only if `conda info` reports `platform :
+osx-64` — an Anaconda from before Apple Silicon builds x86_64 environments, and
+mujoco ships no x86_64 macOS wheel, so the install fails building it from
+source. `environment.yml` explains it and how to make the setting stick.
+
 ## Run
 
 ```sh

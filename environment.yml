@@ -1,0 +1,41 @@
+# Conda environment for core Skillcrane -- the game, the tests, and --record.
+#
+#   CONDA_SUBDIR=osx-arm64 conda env create -f environment.yml
+#   conda activate skillcrane
+#   conda config --env --set subdir osx-arm64      # keep later installs arm64
+#   python main.py                 # play
+#   python -m pytest -q            # 116 passed, 10 skipped
+#
+# This is the equivalent of `pip install -r requirements.txt` in a venv, and is
+# what you want for day-to-day work on the arm. It deliberately does NOT pin
+# mujoco below 3.12 or numpy below 2 -- those pins belong to the benchmark
+# families, so they live in environment-benchmarks.yml (robosuite, Meta-World,
+# Fetch) and environment-libero.yml (LIBERO), which are separate environments
+# for the reasons documented in BENCHMARKS.md.
+#
+# Dependencies come from pip rather than conda so that this file and
+# requirements.txt cannot drift apart in their version bounds.
+#
+# Why CONDA_SUBDIR: an Anaconda installed before Apple Silicon (or through
+# Rosetta) reports `platform : osx-64`, and every env it creates gets an x86_64
+# Python. pip then looks for x86_64 macOS wheels, mujoco does not publish one,
+# and the install dies building mujoco from source -- which reads like a
+# compiler problem rather than an architecture one. Check with
+# `conda info | grep platform`; if it says osx-64, the prefix above is required
+# and the `conda config --env` line makes it stick for later installs.
+name: skillcrane
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # core -- everything except --record needs only these
+      - mujoco>=3.1
+      - pygame>=2.5
+      - numpy>=1.26
+      # tests
+      - pytest>=8.0
+      # optional: imported by recorder.py only for `main.py --record`
+      - pyarrow>=15.0
+      - pillow>=10.0
