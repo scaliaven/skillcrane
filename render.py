@@ -49,6 +49,12 @@ assert WINDOW_W <= scene.OFF_W and WINDOW_H <= scene.OFF_H, \
 
 MARGIN = 24                            # HUD text inset, at scale 1
 
+# How long a one-off message stays on the HUD. Switching suite or task can
+# legitimately do nothing -- one suite installed, one task in it -- and the
+# operator is looking at the window, not at the terminal the reason was printed
+# to. Without this, a correct no-op is indistinguishable from a dead key.
+NOTICE_SECONDS = 5.0
+
 BG = (14, 15, 18)
 HUD_BG = (22, 24, 28)
 WHITE = (235, 235, 240)
@@ -99,6 +105,7 @@ class Display:
         self.clock = pygame.time.Clock()
         self.flash = 0.0
         self.layout = LAYOUTS[0]
+        self.notice, self.notice_t = "", 0.0
         self._measure()
 
     @staticmethod
@@ -140,6 +147,16 @@ class Display:
     def set_caption(self, caption: str) -> None:
         """Window title, so switching environments is visible outside the HUD."""
         pygame.display.set_caption(caption)
+
+    def notify(self, text: str) -> None:
+        """Say something on the HUD for NOTICE_SECONDS.
+
+        Used for anything that happens *because of a key or button* and would
+        otherwise be invisible: the suite changed, or it could not because there
+        is nowhere to go. The terminal keeps its copy; this is the one the
+        operator can actually see without looking away from the arm.
+        """
+        self.notice, self.notice_t = str(text), NOTICE_SECONDS
 
     def cycle_layout(self) -> str:
         """Next view layout, and the name of it."""
@@ -239,8 +256,15 @@ class Display:
         self._hint(status, 82, GREY)
         self._hint(controls or "L-stick move  R-stick lift/rotate  A grip  "
                                "LB/RB camera  Y reset", 106, DIM)
-        self._hint(f"{hud.task}   ee {np.round(hud.ee, 2)}   "
-                   f"obj {np.round(hud.obj, 2)}", 130, FAINT)
+        # The bottom line is telemetry until something has to be said, and a
+        # notice takes it over rather than getting a fourth line: the band is
+        # sized for three, and the notice is the only one that is ever urgent.
+        if self.notice_t > 0:
+            self._hint(self.notice, 130, GOLD)
+            self.notice_t = max(0.0, self.notice_t - dt)
+        else:
+            self._hint(f"{hud.task}   ee {np.round(hud.ee, 2)}   "
+                       f"obj {np.round(hud.obj, 2)}", 130, FAINT)
         if hud.time_left <= 0:
             blit(self.f_big.render("TIME  -  press R", True, RED),
                  (w - round(280 * self.scale), self.render_h + round(20 * self.scale)))

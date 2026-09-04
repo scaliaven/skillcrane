@@ -335,8 +335,19 @@ suite you are on: `Lift` → `Stack` → `PickPlaceCan` → … The ring is that
 task list in `--list-envs`. The native arm has one scene, so it says so instead
 of rebuilding the same environment.
 
-The HUD names both, next to the control that changes each:
-`suite native <Back/Start>   task default <d-pad>   views single <X>: scene`.
+The HUD names both, next to *both* controls that change each, with the ring
+position beside it:
+
+```
+suite native 1/1 <[ ] Back/Start>   task default 1/1 <, . d-pad>   views single <V X>: scene
+```
+
+The `1/1` is the part worth reading when a key seems dead: it means the ring has
+one entry, so cycling it correctly does nothing. On a bare checkout both rings
+are one long — nothing but the native arm is installed, and the native arm has
+one scene. Press the key anyway and the HUD says why, in gold, for five seconds:
+*"native is the only suite installed -- python main.py --list-envs"*. That line
+goes to the terminal too, but the HUD is where you are looking.
 
 A switch tears down the old environment and builds the new one, so it is not
 instant; the window title and the HUD both name the environment you are on. If

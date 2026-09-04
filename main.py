@@ -178,6 +178,22 @@ def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60,
     return 0
 
 
+def _ring(items, current) -> str:
+    """"2/6" -- where `current` sits in the ring it can be cycled around.
+
+    On screen next to the suite and the task, because the commonest report about
+    the switch keys is that they do nothing, and the commonest reason is a ring
+    one entry long: nothing installed beside the native arm, or a suite with a
+    single task. "1/1" answers that without the operator having to go and read
+    the terminal.
+    """
+    items = list(items)
+    if not items:
+        return ""
+    i = items.index(current) if current in items else 0
+    return f"{i + 1}/{len(items)}"
+
+
 def _open(spec: str, seed: int, record, views: str, size=RECORD_SIZE) -> Session:
     """Build `spec` and everything that has to be replaced along with it."""
     import benchmarks
@@ -196,12 +212,17 @@ def _session(env, spec: str, record, views: str, size=RECORD_SIZE) -> Session:
 
 
 def _switch(s: Session, new_spec: str, seed, record, views, nothing: str,
-            what: str = "env", size=RECORD_SIZE) -> Session:
+            what: str = "env", size=RECORD_SIZE, say=print) -> Session:
     """Rebuild the session on `new_spec` without leaving the round.
 
     `what` is the noun to report it as -- "suite" or "task" -- because from here
     the two switches are the same operation and only the operator can tell them
     apart, which they cannot do if both print the same word.
+
+    `say` reports the outcome. It defaults to print, but the live loop passes
+    one that also puts the line on the HUD: every branch below can end in
+    "nothing changed", and an operator watching the window would otherwise read
+    a correct no-op as a dead key.
 
     A switch changes the observation and action schema -- a different suite has
     a different state width, a different task has different objects in it -- so
@@ -215,22 +236,22 @@ def _switch(s: Session, new_spec: str, seed, record, views, nothing: str,
     import benchmarks
 
     if new_spec == s.spec:
-        print(nothing)
+        say(nothing)
         return s
     try:
         env = benchmarks.make(new_spec, seed=seed)
     except (SystemExit, Exception) as exc:
         # Broad on purpose: a backend that fails to build (a bad install, a
         # missing asset download) must not take the live session down with it.
-        print(f"could not switch to {new_spec}: {exc}")
+        say(f"could not switch to {new_spec}: {exc}")
         return s
 
     if s.rec is not None and len(s.rec):
         print(f"recorded {len(s.rec)} ticks -> {s.rec.save()}")
     s.env.close()
     suite, task = benchmarks.parse(new_spec)
-    print(f"{what} -> {new_spec}   suite {suite}  task {task or '(default)'}   "
-          f"views: {', '.join(env.view_names)}")
+    say(f"{what} -> {new_spec}   suite {suite}  task {task or '(default)'}   "
+        f"views: {', '.join(env.view_names)}")
     return _session(env, new_spec, record, views, size)
 
 
@@ -270,6 +291,16 @@ def run_game(seed=None, record=None, env_spec: str = "native",
               "Run gamepad_probe.py if yours is connected but idle.")
     kb = KeyboardReader()
 
+    def say(text: str) -> None:
+        """Report a switch to both places the operator might be looking.
+
+        The terminal keeps the full line for later; the HUD gets it too, because
+        "nothing happened" is a legitimate outcome of pressing [ or ] and the
+        window is where the operator's eyes are.
+        """
+        print(text)
+        display.notify(text)
+
     frame_dt = 1 / 60
     accum = 0.0
     running = True
@@ -296,29 +327,32 @@ def run_game(seed=None, record=None, env_spec: str = "native",
         # `task` swaps the setting inside the one already running.
         if ci.suite and not suite_latch:
             s = _switch(s, benchmarks.cycle_suite(s.spec, ci.suite), seed, record,
-                        record_views, what="suite", size=record_size,
-                        nothing=f"{s.spec} is the only benchmark suite installed "
-                                f"-- python main.py --list-envs shows the others "
-                                f"and what installs them")
+                        record_views, what="suite", size=record_size, say=say,
+                        # Short enough to survive the HUD's trim at the
+                        # default window: this line is the answer to "why did
+                        # nothing happen", so its actionable half must not be
+                        # the half that gets cut.
+                        nothing=f"{s.spec} is the only suite installed -- "
+                                f"python main.py --list-envs")
             display.set_caption(f"Skillcrane - {s.spec}")
             accum = 0.0         # the new env has its own control rate
         suite_latch = bool(ci.suite)
         if ci.task and not task_latch:
             suite = benchmarks.parse(s.spec)[0]
             s = _switch(s, benchmarks.cycle_task(s.spec, ci.task), seed, record,
-                        record_views, what="task", size=record_size,
-                        nothing=f"the {suite} suite has one task setting; "
-                                f"[ / ] switches suite instead")
+                        record_views, what="task", size=record_size, say=say,
+                        nothing=f"{suite} has one task -- [ ] or Back/Start "
+                                f"switches suite instead")
             display.set_caption(f"Skillcrane - {s.spec}")
             accum = 0.0
         task_latch = bool(ci.task)
         if ci.view and not view_latch:
             layout = display.cycle_layout()
-            print(f"views -> {layout}: "
-                  f"{', '.join(display.view_sizes(s.env.view_names))}")
+            say(f"views -> {layout}: "
+                f"{', '.join(display.view_sizes(s.env.view_names))}")
         view_latch = bool(ci.view)
         if ci.follow and not follow_latch:
-            print("camera follow", "on" if s.env.toggle_follow() else "off")
+            say(f"camera follow {'on' if s.env.toggle_follow() else 'off'}")
         follow_latch = bool(ci.follow)
         if ci.cam:
             s.env.orbit(ci.cam * CAM_SPEED * frame_dt)
@@ -348,15 +382,27 @@ def run_game(seed=None, record=None, env_spec: str = "native",
 
         suite, task = benchmarks.parse(s.spec)
         display.draw(s.env.hud(), views, scored, frame_dt,
-                     # Each switchable thing next to the button that switches
-                     # it: which suite, which task inside it, which layout.
-                     # That is the distinction operators kept losing.
-                     status=f"suite {suite} <Back/Start>   "
-                            f"task {task or 'default'} <d-pad>   "
-                            f"views {display.layout} <X>: "
+                     # Each switchable thing next to *both* ways to switch it,
+                     # keyboard first -- the HUD used to name only the pad, so a
+                     # keyboard operator had no way to learn [ ] and , . exist.
+                     #
+                     # The counts are the other half of that: "1/1" says there
+                     # is nowhere to go, so a key that does nothing reads as an
+                     # empty ring rather than as a dead binding.
+                     status=f"suite {suite} {_ring(benchmarks.suites(), suite)} "
+                            f"<[ ] Back/Start>   "
+                            f"task {task or 'default'} "
+                            f"{_ring(benchmarks.tasks(s.spec), task)} "
+                            f"<, . d-pad>   "
+                            f"views {display.layout} <V X>: "
                             f"{', '.join(display.view_sizes(s.env.view_names))}",
-                     controls="L-stick move   R-stick lift/rot   A grip   "
-                              "LB/RB cam   LT/RT zoom   B follow   Y reset")
+                     # Both devices on one line, key first, sized to fit the
+                     # default window without being trimmed. The suite, task
+                     # and view bindings are not repeated here -- they are on
+                     # the status line, next to what they change.
+                     controls="move WASD/stick  lift QE  wrist ZC  grip SPC/A  "
+                              "cam arrows/LB-RB  zoom -=/LT-RT  follow F/B  "
+                              "reset R/Y")
         display.tick(60)
 
     if s.rec is not None and len(s.rec):

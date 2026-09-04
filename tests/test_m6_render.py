@@ -207,3 +207,42 @@ def test_the_renderer_cache_does_not_grow_with_every_resize(display):
         env.frames(d.view_sizes(env.view_names))
     assert len(env._renderers) <= MAX_RENDERERS
     d.resize(render.WINDOW_W, render.WINDOW_H)
+
+
+# --- telling the operator what a key just did -------------------------------
+#
+# Switching suite or task can legitimately change nothing (one suite installed,
+# one task in it). That used to be reported only on stdout, behind the window,
+# so a correct no-op was indistinguishable from a dead key. These pin the HUD
+# side of it.
+
+def test_a_notice_is_shown_and_then_expires(display):
+    env, d, render = display
+    d.notify("suite -> robosuite")
+    assert d.notice_t == pytest.approx(render.NOTICE_SECONDS)
+    frame = env.frame(*d.viewport)
+    d.draw(env.hud(), frame, dt=1.0)
+    assert d.notice_t == pytest.approx(render.NOTICE_SECONDS - 1.0)
+    d.draw(env.hud(), frame, dt=render.NOTICE_SECONDS)
+    assert d.notice_t == 0.0, "a notice must not stay up forever"
+
+
+def test_a_notice_never_outlives_the_hud_band(display):
+    """It takes over the telemetry line rather than adding a fourth one."""
+    env, d, render = display
+    d.notify("x")
+    line_y = d.render_h + round(130 * d.scale)
+    assert line_y + d.f_tiny.get_height() <= d.screen.get_size()[1], \
+        "the notice line must sit inside the HUD band"
+    d.draw(env.hud(), env.frame(*d.viewport), dt=render.NOTICE_SECONDS)
+
+
+def test_the_ring_position_says_when_there_is_nowhere_to_go():
+    """The commonest 'the key does nothing' is a ring one entry long."""
+    from main import _ring
+    assert _ring(("native",), "native") == "1/1"
+    assert _ring(("native", "robosuite", "fetch"), "fetch") == "3/3"
+    # An unlisted current entry (a hand-typed --env task id) is position 1, not
+    # a crash: cycle_task treats it the same way.
+    assert _ring(("Lift", "Stack"), None) == "1/2"
+    assert _ring((), None) == ""

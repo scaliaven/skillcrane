@@ -63,7 +63,17 @@ Two different switches, and conflating them is how the rig gets confusing:
   adapter. `registry.cycle_task`, bound to the d-pad and `,` / `.`.
 
 An *environment spec* names both: `robosuite:Lift`. `--env` takes one, `parse()`
-splits it, and the HUD prints each next to the control that changes it. The word
+splits it, and the HUD prints each next to the control that changes it.
+
+Both rings can legitimately be one entry long -- one suite installed, one task
+in it -- and then the key correctly does nothing. That is indistinguishable from
+a broken binding unless the rig says so, so two things make it visible: the HUD
+carries the ring position (`suite native 1/1`), and every switch outcome goes
+through `run_game`'s `say()`, which prints *and* calls `Display.notify()` for a
+five-second gold line in the HUD band. Reporting a no-op only on stdout is not
+reporting it -- the operator is watching the window. The HUD also names the
+keyboard binding next to the pad one for the same reason: it used to say only
+`<Back/Start>`, so a keyboard operator had no way to learn `[` / `]` exists. The word
 "family" used to do duty for both and was removed; `ControlInput.suite`,
 `SUITES`, `suites()` and `cycle_suite()` are the current names.
 
@@ -218,12 +228,12 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 | M3 | grasping (12 seeds) | `test_m3_grasp.py` | 19 passed |
 | M4 | game rules | `test_m4_rules.py` | 17 passed |
 | M5 | input layer | `test_m5_input.py` | 54 passed |
-| M6 | render + HUD | `test_m6_render.py` | 22 passed |
+| M6 | render + HUD | `test_m6_render.py` | 25 passed |
 | M7 | recording (stretch) | `test_m7_record.py` | 17 passed |
 | M8 | benchmark adapters | `test_benchmarks.py` | 39 passed, 17 skipped |
 | — | hard rule | `test_no_pygame.py` | 4 passed |
 
-Totals: **193 passed / 17 skipped** with no benchmarks installed. The counts
+Totals: **196 passed / 17 skipped** with no benchmarks installed. The counts
 with the benchmark suites installed have not been re-measured since the
 switching work.
 
