@@ -109,10 +109,45 @@ Settled details behind the native cameras:
   fixed-size views) and a per-render lerp would move at whatever rate the layout
   happened to demand.
 
+### Render settings that were tuned by looking at the output
+
+The scene is lit and sized for an operator reading depth off a 2-D panel, not
+for a screenshot. Four of these are findings, not preferences:
+
+- **`offsamples="8"`** in `<quality>` (default 4). Every frame this project
+  shows or records comes off the offscreen buffer, so it is the one anti-alias
+  knob that reaches all of them, including the 320×240 recorded ones.
+- **`shadowsize` stays 2048.** 4096 is not free quality: the finer shadow texel
+  put visible acne -- a green stipple -- across the flat drop-zone site, which
+  sits 2 mm off the floor.
+- **The key light stays positional.** A directional one lights the scene just as
+  well and casts no usable shadow here, and the contact shadow under the gripper
+  is the only cue on a 2-D screen for how far above the cube the fingers are.
+- **`<map znear="0.004">`.** znear is a *fraction of the model extent* (~1.2 m),
+  so the default put the near plane at ~1 cm short of where the wrist camera
+  needs it; the eye-in-hand view sits 10 cm from jaws it has to see.
+- Fingers are light grey (0.52), not the 0.20 they started at: in the wrist
+  camera they were a black silhouette against a dark floor, in every recorded
+  eye-in-hand frame.
+
+The window is **resizable** (default 1280×860, `--window WxH`). Nothing may
+assume a size: `panels()` takes the viewport, `Display._measure()` re-derives
+the type sizes, HUD band and margins from the window height, and the environment
+is asked for frames at exactly the new panel sizes rather than being upscaled.
+`NativeEnv` caches renderers per size and **bounds that cache** (MAX_RENDERERS)
+-- a window drag is one resize per mouse move, and each size is a GL context.
+
+Measured on this machine (M-series, with the physics in the loop): 6.8 ms/frame
+for one 1280x638 panel, 11.7 ms for a four-panel grid at 1600x1000, 10.2 ms for
+a single 2048x1000. All inside the 16.7 ms the 60 Hz loop has, which is why
+offsamples went to 8 and the default window got bigger rather than either being
+traded against frame rate.
+
 Recording is deliberately decoupled from the window: `--record-views` renders
-its own frames at a fixed 320x240, because a dataset column has one image shape
-for the whole episode and the operator can change the layout mid-round. Each
-view becomes its own `observation.images.<view>` column.
+its own frames at a fixed size (`--record-size`, 320x240 by default), because a
+dataset column has one image shape for the whole episode while the operator can
+change the layout and resize the window mid-round. Each view becomes its own
+`observation.images.<view>` column.
 
 ## Non-negotiable constraints
 
@@ -132,9 +167,13 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
    position actuators chase that same command closes a loop through the actuator
    dynamics and oscillates hard.
 
-3. **Declare `<visual><global offwidth=... offheight=.../></visual>`** sized to
-   the window. MuJoCo's offscreen framebuffer defaults to 640×480 and *raises*
-   rather than downscaling. `render.py` asserts its window fits.
+3. **Declare `<visual><global offwidth=... offheight=.../></visual>`** big
+   enough for the window. MuJoCo's offscreen framebuffer defaults to 640×480 and
+   *raises* rather than downscaling. It is 2048×1152 here; `render.py` asserts
+   its **default** window fits and `Display.view_sizes` clamps panel requests to
+   it, because the window is resizable and can be dragged past the cap. Past it,
+   frames are rendered at the cap and scaled up — losing sharpness is acceptable
+   mid-round, raising is not.
 
 4. **Gripper joint 0 = fully open**, increasing closes. Fingers must open wider
    than the cube (cube 48 mm across, finger inner faces 68 mm apart when open).
@@ -179,12 +218,12 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 | M3 | grasping (12 seeds) | `test_m3_grasp.py` | 19 passed |
 | M4 | game rules | `test_m4_rules.py` | 17 passed |
 | M5 | input layer | `test_m5_input.py` | 54 passed |
-| M6 | render + HUD | `test_m6_render.py` | 14 passed |
+| M6 | render + HUD | `test_m6_render.py` | 22 passed |
 | M7 | recording (stretch) | `test_m7_record.py` | 17 passed |
-| M8 | benchmark adapters | `test_benchmarks.py` | 38 passed, 17 skipped |
+| M8 | benchmark adapters | `test_benchmarks.py` | 39 passed, 17 skipped |
 | — | hard rule | `test_no_pygame.py` | 4 passed |
 
-Totals: **184 passed / 17 skipped** with no benchmarks installed. The counts
+Totals: **193 passed / 17 skipped** with no benchmarks installed. The counts
 with the benchmark suites installed have not been re-measured since the
 switching work.
 

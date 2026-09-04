@@ -58,6 +58,8 @@ python main.py --seed 7         # fixed cube spawns
 python main.py --record         # collect the session into runs/ (off unless asked)
 python main.py --record DIR     # ... into DIR instead
 python main.py --record --record-views all   # ... logging every camera, not just one
+python main.py --window 1600x1000            # open a bigger window (drag to resize too)
+python main.py --record --record-size 640x480   # bigger frames in the dataset
 python gamepad_probe.py         # see what your pad reports, and how it is read
 ```
 
@@ -118,6 +120,23 @@ Each view is rendered at exactly the panel size it will be drawn into, so
 cameras are declared in the MJCF (`scene.py`), not built in code, so anything
 else that loads the model sees the same views.
 
+### Window size
+
+The window opens at **1280×860** and is **resizable** — drag a corner, or start
+with `--window 1600x1000`. Nothing is upscaled when you do: the layout recomputes
+its panel rects, the environment is asked for frames at exactly those sizes, and
+the HUD's type, band height and margins scale with the window, so a 2560-wide
+window is a 2560-wide render rather than a stretched 1280 one.
+
+The one ceiling is MuJoCo's offscreen framebuffer, declared in the MJCF at
+2048×1152 (`scene.OFF_W/OFF_H`). MuJoCo *raises* rather than downscaling when
+asked for more, so panels are clamped to it and scaled up beyond that point —
+a window dragged across a 4K display degrades in sharpness instead of ending the
+round.
+
+Recorded frames are separate and do not follow the window: `--record-size WxH`
+(default 320×240) sets them, because one dataset column has one image shape.
+
 ### Driving the operator's camera
 
 All three views are framed for *control*, which means close:
@@ -156,11 +175,11 @@ runs headless. See `CLAUDE.md` for the physics constraints that must not be
 ## Tests
 
 ```sh
-python -m pytest -q          # 184 tests, ~10 s, no display and no gamepad needed
+python -m pytest -q          # 193 tests, ~11 s, no display and no gamepad needed
 ```
 
 Benchmark tests skip cleanly when the benchmark isn't installed, so a bare
-checkout stays green (184 passed / 17 skipped).
+checkout stays green (193 passed / 17 skipped).
 
 Physics tests assert on numbers — contact count, joint velocity, tracking error,
 cube height, score — and the grasp tests are parametrised over 12 random spawns,
@@ -187,8 +206,11 @@ its own `observation.images.<view>` column with its own PNG per tick, which is
 how LeRobot describes a multi-camera rig.
 
 Recorded frames are **not** the ones on screen. They are rendered separately at
-a fixed 320×240, because a dataset column has one image shape for the whole
-episode and the operator can change the layout mid-round.
+a fixed size — `--record-size`, 320×240 by default — because a dataset column has
+one image shape for the whole episode, while the operator can change the layout
+mid-round and resize the window. Bigger frames cost disk in a straight line: the
+16.8 s headless episode is 63 MB with one camera at 320×240 and 215 MB with two
+at 640×480.
 
 One thing to know before training on them: `scene` is the **operator's** camera,
 so it orbits, zooms and follows the gripper during the episode, and none of that

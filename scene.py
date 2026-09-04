@@ -8,8 +8,14 @@ import numpy as np
 # --- Offscreen framebuffer ---------------------------------------------------
 # MuJoCo's offscreen buffer defaults to 640x480 and *raises* if you ask
 # mujoco.Renderer for anything larger -- it does not silently downscale. So the
-# size is declared in the MJCF and render.py asserts its window fits inside it.
-OFF_W, OFF_H = 1280, 720
+# size is declared in the MJCF; render.py asserts its default window fits and
+# clamps panel requests to it, because the window is resizable and can be
+# dragged past this.
+#
+# 2048x1152 is headroom for a maximised window on a laptop display (macOS
+# reports window sizes in points, so a 3024-pixel screen is ~1512 wide here).
+# It costs one framebuffer allocation, not per-frame work.
+OFF_W, OFF_H = 2048, 1152
 
 # --- Physics / control rates -------------------------------------------------
 TIMESTEP = 0.002          # MuJoCo integrator step
@@ -82,7 +88,11 @@ def build_xml(offwidth: int = OFF_W, offheight: int = OFF_H) -> str:
             contype="0" conaffinity="0"/>
     </default>
     <default class="finger">
-      <geom type="box" friction="2.0 0.1 0.002" condim="4" rgba="0.20 0.22 0.25 1" mass="0.05"/>
+      <!-- Deliberately lighter than the wrist behind them. The eye-in-hand
+           camera looks straight down the gripper, and at 0.20 grey the jaws
+           were a black silhouette against a dark floor in every recorded wrist
+           frame -- you could not see where the jaw ended and the cube began. -->
+      <geom type="box" friction="2.0 0.1 0.002" condim="4" rgba="0.52 0.55 0.60 1" mass="0.05"/>
     </default>
     <!-- Position actuators. A position servo trails a moving command by
          roughly kv*qdot/kp, and that following error is the biggest single
@@ -97,20 +107,43 @@ def build_xml(offwidth: int = OFF_W, offheight: int = OFF_H) -> str:
 
   <visual>
     <global offwidth="{offwidth}" offheight="{offheight}"/>
-    <quality shadowsize="2048"/>
+    <!-- offsamples is the offscreen multisample count (default 4). Every frame
+         this project shows or records comes off that buffer, so it is the one
+         quality knob that touches all of them; 8 is where the gripper and
+         shadow edges stop stair-stepping in a 320x240 recorded frame. -->
+    <!-- shadowsize stays at 2048. 4096 is not free quality: the finer shadow
+         texel put visible acne (a green stipple) all over the flat drop-zone
+         site, which sits 2 mm off the floor. -->
+    <quality shadowsize="2048" offsamples="8"/>
+    <!-- znear/zfar are fractions of the model extent (~3 m here), so the
+         defaults put the near plane at 3 cm -- and the wrist camera sits 10 cm
+         from a gripper it has to see the near jaw of. 0.004 puts it at ~1 cm
+         and still leaves plenty of depth precision at zfar. -->
+    <map znear="0.004" zfar="10" shadowclip="0.8"/>
+    <!-- The camera-mounted light. Ambient is what stops the underside of the
+         arm and the inside of the fingers going to black in a close view. -->
+    <headlight ambient="0.24 0.24 0.27" diffuse="0.34 0.34 0.36"
+               specular="0.08 0.08 0.08"/>
   </visual>
 
   <asset>
-    <texture name="sky" type="skybox" builtin="gradient" rgb1="0.10 0.11 0.14"
-             rgb2="0.02 0.02 0.03" width="256" height="256"/>
-    <texture name="grid" type="2d" builtin="checker" rgb1="0.16 0.17 0.20"
-             rgb2="0.20 0.21 0.24" width="300" height="300"/>
-    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.05"/>
+    <texture name="sky" type="skybox" builtin="gradient" rgb1="0.18 0.20 0.26"
+             rgb2="0.04 0.04 0.06" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.21 0.23 0.27"
+             rgb2="0.27 0.29 0.33" width="512" height="512"/>
+    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.05"
+              specular="0.2" shininess="0.1"/>
   </asset>
 
   <worldbody>
-    <light pos="0.6 -0.4 1.6" dir="-0.3 0.2 -1" diffuse="0.9 0.9 0.9"/>
-    <light pos="-0.6 0.6 1.2" dir="0.4 -0.4 -1" diffuse="0.35 0.35 0.40"/>
+    <!-- Key light stays positional. A directional one lights the scene just as
+         well but casts no usable shadow here, and the contact shadow under the
+         gripper is the depth cue that tells the operator how far above the
+         cube they are -- on a 2-D screen there is nothing else saying so. -->
+    <light name="key" pos="0.8 -0.6 2.0" dir="-0.35 0.25 -1"
+           diffuse="0.95 0.95 0.92" specular="0.25 0.25 0.25" castshadow="true"/>
+    <light name="fill" directional="true" pos="-0.7 0.7 1.4" dir="0.4 -0.4 -1"
+           diffuse="0.30 0.32 0.38" specular="0.05 0.05 0.05" castshadow="false"/>
     <geom name="floor" type="plane" size="3 3 0.05" material="grid" friction="1 0.05 0.001"/>
 
     <body name="base" pos="0 0 0.05">

@@ -18,9 +18,15 @@ import pygame
 
 import scene
 
-WINDOW_W, WINDOW_H = 900, 620
-RENDER_W, RENDER_H = 900, 460          # 3D viewport; the rest is HUD
-HUD_TOP = RENDER_H
+# Default window. The window is resizable and `--window WxH` overrides this, so
+# nothing downstream may assume a size: the viewport, the panel rects, the HUD
+# type sizes and the frames asked of the environment are all derived from
+# whatever the window currently is.
+WINDOW_W, WINDOW_H = 1280, 860
+MIN_W, MIN_H = 720, 520                # below this the HUD stops fitting
+HUD_H = 160                            # HUD band height at BASE_H, scaled with it
+BASE_H = 620                           # window height the HUD type sizes were drawn at
+MAX_SCALE = 1.8                        # past this the HUD eats the viewport
 CAM_SPEED = 90.0                       # degrees/second of camera orbit at full input
 
 # Multi-view layouts. An environment declares its cameras (TeleopEnv.view_names)
@@ -29,15 +35,19 @@ CAM_SPEED = 90.0                       # degrees/second of camera orbit at full 
 # thrown away. A one-camera environment always gets `single`, whatever the
 # operator last picked -- there is no second view to show.
 LAYOUTS = ("single", "inset", "grid")
-INSET_W = 216                          # a quarter of the viewport, near enough
-INSET_PAD = 10
+INSET_FRAC = 0.24                      # inset width as a fraction of the viewport
+INSET_PAD_FRAC = 0.011
 
 # MuJoCo's offscreen framebuffer is fixed at model-compile time and it raises
-# rather than downscaling, so a window bigger than it is a hard error.
-assert RENDER_W <= scene.OFF_W and RENDER_H <= scene.OFF_H, \
-    f"render {RENDER_W}x{RENDER_H} exceeds MJCF offscreen {scene.OFF_W}x{scene.OFF_H}"
+# rather than downscaling. The default window has to fit inside it; a window
+# dragged past it is not an error, but its panels are rendered at the cap and
+# scaled up (see `Display.view_sizes`), because the alternative is a crash
+# mid-session.
+assert WINDOW_W <= scene.OFF_W and WINDOW_H <= scene.OFF_H, \
+    f"default window {WINDOW_W}x{WINDOW_H} exceeds MJCF offscreen " \
+    f"{scene.OFF_W}x{scene.OFF_H}"
 
-MARGIN = 24                            # HUD text inset from the window edge
+MARGIN = 24                            # HUD text inset, at scale 1
 
 BG = (14, 15, 18)
 HUD_BG = (22, 24, 28)
@@ -50,43 +60,82 @@ GREEN = (90, 230, 140)
 RED = (240, 120, 110)
 
 
-def panels(layout: str, n: int) -> list:
-    """(x, y, w, h) per view under `layout`, main view first.
+def panels(layout: str, n: int, size) -> list:
+    """(x, y, w, h) per view under `layout` inside a `size` viewport, main first.
 
     Returns at most `n` rects and never more than the layout holds -- 4 in the
     grid, 1 + 3 insets -- so an environment with six cameras simply shows the
     first few rather than shrinking everything into unreadable tiles.
+
+    `size` is passed in rather than read from a constant because the window is
+    resizable: the panels have to be recomputed for whatever it is now.
     """
+    vw, vh = int(size[0]), int(size[1])
     n = max(1, int(n))
-    full = (0, 0, RENDER_W, RENDER_H)
+    full = (0, 0, vw, vh)
     if n == 1 or layout == "single":
         return [full]
     if layout == "grid":
         if n == 2:                     # two halves read better than two tiles
-            w = RENDER_W // 2
-            return [(0, 0, w, RENDER_H), (w, 0, RENDER_W - w, RENDER_H)]
-        w, h = RENDER_W // 2, RENDER_H // 2
+            w = vw // 2
+            return [(0, 0, w, vh), (w, 0, vw - w, vh)]
+        w, h = vw // 2, vh // 2
         return [(x, y, w, h) for x, y in ((0, 0), (w, 0), (0, h), (w, h))][:min(n, 4)]
-    h = round(INSET_W * RENDER_H / RENDER_W)
-    return [full] + [(RENDER_W - INSET_W - INSET_PAD, INSET_PAD + i * (h + INSET_PAD),
-                      INSET_W, h) for i in range(min(n - 1, 3))]
+    iw = max(48, round(vw * INSET_FRAC))
+    ih = max(32, round(iw * vh / vw))
+    pad = max(4, round(vw * INSET_PAD_FRAC))
+    return [full] + [(vw - iw - pad, pad + i * (ih + pad), iw, ih)
+                     for i in range(min(n - 1, 3))]
 
 
 class Display:
     """Window, HUD, and a place to blit whatever the environment rendered."""
 
-    def __init__(self, caption="Skillcrane"):
+    def __init__(self, caption="Skillcrane", size=None):
         pygame.init()
         pygame.display.set_caption(caption)
-        self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+        self.screen = pygame.display.set_mode(self._clamp(size or (WINDOW_W, WINDOW_H)),
+                                              pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
-        self.f_big = pygame.font.SysFont("menlo,dejavusansmono,monospace", 30, bold=True)
-        self.f_sm = pygame.font.SysFont("menlo,dejavusansmono,monospace", 17)
-        self.f_tiny = pygame.font.SysFont("menlo,dejavusansmono,monospace", 13)
         self.flash = 0.0
         self.layout = LAYOUTS[0]
+        self._measure()
+
+    @staticmethod
+    def _clamp(size) -> tuple:
+        """A window no smaller than the HUD needs. No upper bound on purpose --
+        the operator gets to make it as big as their screen; only the *rendered*
+        panels are capped, by `view_sizes`."""
+        return (max(MIN_W, int(size[0])), max(MIN_H, int(size[1])))
+
+    def _measure(self) -> None:
+        """Recompute everything that depends on the window size.
+
+        Called on open and on every resize. The HUD was laid out at BASE_H, so
+        one scale factor drives the type sizes, the band height and the text
+        insets together; the viewport is whatever is left above it.
+        """
+        w, h = self.screen.get_size()
+        self.scale = min(max(h / BASE_H, 1.0), MAX_SCALE)
+        self.hud_h = round(HUD_H * self.scale)
+        self.render_w, self.render_h = w, max(120, h - self.hud_h)
+        font = "menlo,dejavusansmono,monospace"
+        self.f_big = pygame.font.SysFont(font, round(30 * self.scale), bold=True)
+        self.f_sm = pygame.font.SysFont(font, round(17 * self.scale))
+        self.f_tiny = pygame.font.SysFont(font, round(13 * self.scale))
+        self.margin = round(MARGIN * self.scale)
         # Hint lines are monospace, so how much fits is just a character count.
-        self.hint_chars = max(8, (WINDOW_W - 2 * MARGIN) // self.f_tiny.size("M")[0])
+        self.hint_chars = max(8, (w - 2 * self.margin) // self.f_tiny.size("M")[0])
+
+    @property
+    def viewport(self) -> tuple:
+        """(w, h) of the 3D area above the HUD."""
+        return (self.render_w, self.render_h)
+
+    def resize(self, w: int, h: int) -> None:
+        """Follow a window drag. `main.py` calls this on pygame.VIDEORESIZE."""
+        self.screen = pygame.display.set_mode(self._clamp((w, h)), pygame.RESIZABLE)
+        self._measure()
 
     def set_caption(self, caption: str) -> None:
         """Window title, so switching environments is visible outside the HUD."""
@@ -97,14 +146,22 @@ class Display:
         self.layout = LAYOUTS[(LAYOUTS.index(self.layout) + 1) % len(LAYOUTS)]
         return self.layout
 
+    def panels(self, n: int) -> list:
+        """Panel rects for `n` views in this window's current viewport."""
+        return panels(self.layout, n, self.viewport)
+
     def view_sizes(self, view_names) -> dict:
         """{view: (w, h)} to ask the environment for, under the current layout.
 
         Only the views the layout has room for appear, so `env.frames()` never
         renders a camera that would not be drawn.
+
+        Sizes are capped at the MJCF's offscreen buffer: MuJoCo raises rather
+        than downscaling, and a window dragged wider than that must degrade to a
+        scaled-up frame, not an exception in the middle of a round.
         """
-        rects = panels(self.layout, len(view_names))
-        return {name: (r[2], r[3]) for name, r in zip(view_names, rects)}
+        return {name: (min(r[2], scene.OFF_W), min(r[3], scene.OFF_H))
+                for name, r in zip(view_names, self.panels(len(view_names)))}
 
     def blit_frame(self, rgb, rect=None) -> None:
         """Blit an RGB frame into `rect`, scaled if it is a different size.
@@ -112,7 +169,7 @@ class Display:
         Benchmark environments fix their frame size at construction, so scaling
         here is what lets one window serve all of them.
         """
-        x, y, w, h = rect or (0, 0, RENDER_W, RENDER_H)
+        x, y, w, h = rect or (0, 0, self.render_w, self.render_h)
         if rgb is None:
             pygame.draw.rect(self.screen, (30, 32, 38), (x, y, w, h))
             return
@@ -130,7 +187,7 @@ class Display:
         if views is None or isinstance(views, np.ndarray):
             self.blit_frame(views)
             return
-        rects = panels(self.layout, len(views))
+        rects = self.panels(len(views))
         for (name, rgb), rect in zip(views.items(), rects):
             self.blit_frame(rgb, rect)
             if len(rects) > 1:
@@ -139,8 +196,10 @@ class Display:
     def _label(self, name: str, rect) -> None:
         """Name a panel, on a dark strip so it reads over any frame."""
         x, y, w, h = rect
-        pygame.draw.rect(self.screen, BG, (x, y, w, 18))
-        self.screen.blit(self.f_tiny.render(name, True, GREY), (x + 6, y + 2))
+        strip = self.f_tiny.get_height() + round(5 * self.scale)
+        pygame.draw.rect(self.screen, BG, (x, y, w, strip))
+        self.screen.blit(self.f_tiny.render(name, True, GREY),
+                         (x + round(6 * self.scale), y + round(2 * self.scale)))
         pygame.draw.rect(self.screen, (60, 64, 72), rect, 1)
 
     def draw(self, hud, frame=None, scored: bool = False, dt: float = 1 / 60,
@@ -156,36 +215,45 @@ class Display:
 
         self.screen.fill(BG)
         self.blit_views(frame)
-        pygame.draw.rect(self.screen, HUD_BG, (0, HUD_TOP, WINDOW_W, WINDOW_H - HUD_TOP))
+        w, h = self.screen.get_size()
+        pygame.draw.rect(self.screen, HUD_BG, (0, self.render_h, w, h - self.render_h))
+
+        # Everything below is placed relative to the HUD band and the scale
+        # factor, so the same layout holds in a 720-wide window and a 2560-wide
+        # one. The numbers are the pixel offsets it was drawn at, at scale 1.
+        def at(x, y):
+            return (round(x * self.scale), self.render_h + round(y * self.scale))
 
         acc = GREEN if self.flash > 0 else GOLD
         blit = self.screen.blit
-        blit(self.f_big.render(f"SCORE {hud.score}", True, acc), (MARGIN, 480))
-        blit(self.f_big.render(f"{hud.time_left:5.1f}s", True, WHITE), (250, 480))
+        blit(self.f_big.render(f"SCORE {hud.score}", True, acc), at(MARGIN, 20))
+        blit(self.f_big.render(f"{hud.time_left:5.1f}s", True, WHITE), at(250, 20))
         blit(self.f_sm.render(f"streak {hud.streak}  best {hud.best_streak}",
-                              True, GREY), (420, 488))
-        blit(self.f_sm.render(f"gripper {hud.grip}", True, GREY), (420, 510))
+                              True, GREY), at(420, 28))
+        blit(self.f_sm.render(f"gripper {hud.grip}", True, GREY), at(420, 50))
         # Three hint lines, in the order an operator needs them: what is
         # running, how to change it, and what the environment says it wants.
         # All are trimmed rather than allowed to run off the edge -- the
         # controls line names ten bindings and "robosuite:NutAssemblyRound" is
         # a legitimate environment name.
-        self._hint(status, 542, GREY)
+        self._hint(status, 82, GREY)
         self._hint(controls or "L-stick move  R-stick lift/rotate  A grip  "
-                               "LB/RB camera  Y reset", 566, DIM)
+                               "LB/RB camera  Y reset", 106, DIM)
         self._hint(f"{hud.task}   ee {np.round(hud.ee, 2)}   "
-                   f"obj {np.round(hud.obj, 2)}", 590, FAINT)
+                   f"obj {np.round(hud.obj, 2)}", 130, FAINT)
         if hud.time_left <= 0:
-            blit(self.f_big.render("TIME  -  press R", True, RED), (620, 480))
+            blit(self.f_big.render("TIME  -  press R", True, RED),
+                 (w - round(280 * self.scale), self.render_h + round(20 * self.scale)))
 
         self.flash = max(0.0, self.flash - dt)
         pygame.display.flip()
 
     def _hint(self, text: str, y: int, colour) -> None:
-        """One HUD hint line, trimmed rather than allowed to run off the edge."""
+        """One HUD hint line, at `y` inside the HUD band, trimmed to fit."""
         if len(text) > self.hint_chars:
             text = text[:self.hint_chars - 3] + "..."
-        self.screen.blit(self.f_tiny.render(text, True, colour), (MARGIN, y))
+        self.screen.blit(self.f_tiny.render(text, True, colour),
+                         (self.margin, self.render_h + round(y * self.scale)))
 
     def tick(self, fps: int = 60) -> None:
         self.clock.tick(fps)

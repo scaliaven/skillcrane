@@ -404,7 +404,17 @@ def test_record_views_main_is_the_operators_view_only(session_env):
     import main
     sizes = main._record_sizes(session_env, "main")
     assert list(sizes) == [session_env.view_names[0]]
-    assert set(sizes.values()) == {(main.RECORD_W, main.RECORD_H)}
+    assert set(sizes.values()) == {main.RECORD_SIZE}
+
+
+def test_recorded_frames_ignore_the_window_size(session_env):
+    """--record-size is the dataset's shape; the window is the operator's."""
+    import main
+    sizes = main._record_sizes(session_env, "all", (640, 480))
+    assert set(sizes.values()) == {(640, 480)}
+    assert main._size("1600x1000", "window") == (1600, 1000)
+    with pytest.raises(SystemExit):
+        main._size("huge", "window")
 
 
 def test_record_views_all_takes_every_camera(session_env):

@@ -8,6 +8,7 @@
     python main.py --record               collect the session into runs/
     python main.py --record DIR           ... into DIR instead (LeRobot format)
     python main.py --record --record-views all      log every camera, not just one
+    python main.py --window 1600x1000     open a bigger window (it also resizes)
 
 Runs under plain `python`, not `mjpython`: environments render offscreen and
 pygame owns the window, so nothing fights over the macOS main thread.
@@ -43,8 +44,9 @@ MAX_STEPS_PER_FRAME = 8      # keeps a slow env from spiralling on catch-up
 DEFAULT_RECORD_DIR = "runs/"  # where a bare --record collects to
 # Recorded frames are deliberately not the ones on screen: a dataset column has
 # one image shape for the whole episode, and the operator can change the layout
-# mid-round. So recording renders its own fixed-size views.
-RECORD_W, RECORD_H = 320, 240
+# mid-round -- and now the window itself resizes. So recording renders its own
+# fixed-size views, at --record-size, independent of the window.
+RECORD_SIZE = (320, 240)
 DEFAULT_RECORD_VIEWS = "main"
 
 
@@ -74,7 +76,7 @@ def _new_recorder(root, env=None):
     return EpisodeRecorder(root, episode_index=next_episode_index(root), **kw)
 
 
-def _record_sizes(env, views: str) -> dict:
+def _record_sizes(env, views: str, size=RECORD_SIZE) -> dict:
     """{view: (w, h)} to record, from --record-views.
 
     "main" is the operator's own view only, "all" is every camera the env has,
@@ -94,14 +96,16 @@ def _record_sizes(env, views: str) -> dict:
         if missing:
             print(f"no camera named {', '.join(missing)} here; "
                   f"this env has: {', '.join(names)}")
-    return {v: (RECORD_W, RECORD_H) for v in chosen}
+    return {v: tuple(size) for v in chosen}
 
 
 def run_headless(seed: int = 2, record=None, env_spec: str = "native",
-                 record_views: str = DEFAULT_RECORD_VIEWS) -> int:
+                 record_views: str = DEFAULT_RECORD_VIEWS,
+                 record_size=RECORD_SIZE) -> int:
     """Scripted acceptance run for the native arm; a smoke test for benchmarks."""
     if env_spec != "native":
-        return _headless_benchmark(env_spec, seed, record, record_views=record_views)
+        return _headless_benchmark(env_spec, seed, record, record_views=record_views,
+                                   record_size=record_size)
 
     import benchmarks
 
@@ -115,8 +119,9 @@ def run_headless(seed: int = 2, record=None, env_spec: str = "native",
     sizes = {}
     if record is not None:
         rec = _new_recorder(record, env)
-        sizes = _record_sizes(env, record_views)
-        print("recording views:", ", ".join(sizes) or "(none)")
+        sizes = _record_sizes(env, record_views, record_size)
+        print("recording views:", ", ".join(sizes) or "(none)",
+              f"at {record_size[0]}x{record_size[1]}")
 
     def on_tick(game):
         if rec is None:
@@ -142,7 +147,8 @@ def run_headless(seed: int = 2, record=None, env_spec: str = "native",
 
 
 def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60,
-                        record_views: str = DEFAULT_RECORD_VIEWS) -> int:
+                        record_views: str = DEFAULT_RECORD_VIEWS,
+                        record_size=RECORD_SIZE) -> int:
     """Smoke test for a benchmark backend: build it, drive it, report.
 
     Deliberately not an acceptance test -- these environments have their own
@@ -155,7 +161,7 @@ def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60,
     print(f"control_dt {env.control_dt:.4f}s   state dim {env.observation().size}")
     print(f"views      {', '.join(env.view_names)}")
     rec = _new_recorder(record, env) if record is not None else None
-    sizes = _record_sizes(env, record_views) if rec is not None else {}
+    sizes = _record_sizes(env, record_views, record_size) if rec is not None else {}
 
     scored = 0
     for i in range(ticks):
@@ -172,25 +178,25 @@ def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60,
     return 0
 
 
-def _open(spec: str, seed: int, record, views: str) -> Session:
+def _open(spec: str, seed: int, record, views: str, size=RECORD_SIZE) -> Session:
     """Build `spec` and everything that has to be replaced along with it."""
     import benchmarks
 
-    return _session(benchmarks.make(spec, seed=seed), spec, record, views)
+    return _session(benchmarks.make(spec, seed=seed), spec, record, views, size)
 
 
-def _session(env, spec: str, record, views: str) -> Session:
+def _session(env, spec: str, record, views: str, size=RECORD_SIZE) -> Session:
     if record is None:
         return Session(env, spec)
     rec = _new_recorder(record, env)
-    sizes = _record_sizes(env, views)
+    sizes = _record_sizes(env, views, size)
     print(f"recording to {record}  (episode {rec.episode_index}, "
           f"views: {', '.join(sizes) or 'none'})")
     return Session(env, spec, rec, sizes)
 
 
 def _switch(s: Session, new_spec: str, seed, record, views, nothing: str,
-            what: str = "env") -> Session:
+            what: str = "env", size=RECORD_SIZE) -> Session:
     """Rebuild the session on `new_spec` without leaving the round.
 
     `what` is the noun to report it as -- "suite" or "task" -- because from here
@@ -225,11 +231,12 @@ def _switch(s: Session, new_spec: str, seed, record, views, nothing: str,
     suite, task = benchmarks.parse(new_spec)
     print(f"{what} -> {new_spec}   suite {suite}  task {task or '(default)'}   "
           f"views: {', '.join(env.view_names)}")
-    return _session(env, new_spec, record, views)
+    return _session(env, new_spec, record, views, size)
 
 
 def run_game(seed=None, record=None, env_spec: str = "native",
-             record_views: str = DEFAULT_RECORD_VIEWS) -> int:
+             record_views: str = DEFAULT_RECORD_VIEWS, record_size=RECORD_SIZE,
+             window=None) -> int:
     import pygame
 
     import benchmarks
@@ -238,8 +245,8 @@ def run_game(seed=None, record=None, env_spec: str = "native",
 
     if seed is None:
         seed = int(np.random.randint(1 << 30))
-    s = _open(env_spec, seed, record, record_views)
-    display = Display(caption=f"Skillcrane - {s.spec}")
+    s = _open(env_spec, seed, record, record_views, record_size)
+    display = Display(caption=f"Skillcrane - {s.spec}", size=window)
     # Spelled out at startup because the two rings are the thing operators get
     # wrong: the suite ring holds only what is installed, the task ring is
     # whatever the suite you are on offers.
@@ -251,6 +258,8 @@ def run_game(seed=None, record=None, env_spec: str = "native",
           "   (, / . or d-pad switches task)")
     print("views:", ", ".join(s.env.view_names), "   (V or X cycles the layout,",
           "-/= or the triggers zoom, F or B toggles camera follow)")
+    print(f"window: {display.screen.get_size()[0]}x{display.screen.get_size()[1]}"
+          f"  -- drag the corner to resize, or start with --window WxH")
 
     pad = GamepadReader.open()
     if pad:
@@ -272,6 +281,11 @@ def run_game(seed=None, record=None, env_spec: str = "native",
                 running = False
             elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
                 running = False
+            elif ev.type == pygame.VIDEORESIZE:
+                # Every panel is re-rendered at the new size next frame; the
+                # environment is asked for those sizes, so nothing is upscaled
+                # from the old window.
+                display.resize(ev.w, ev.h)
 
         ci = kb.read(pygame.key.get_pressed())
         if pad:
@@ -282,7 +296,7 @@ def run_game(seed=None, record=None, env_spec: str = "native",
         # `task` swaps the setting inside the one already running.
         if ci.suite and not suite_latch:
             s = _switch(s, benchmarks.cycle_suite(s.spec, ci.suite), seed, record,
-                        record_views, what="suite",
+                        record_views, what="suite", size=record_size,
                         nothing=f"{s.spec} is the only benchmark suite installed "
                                 f"-- python main.py --list-envs shows the others "
                                 f"and what installs them")
@@ -292,7 +306,7 @@ def run_game(seed=None, record=None, env_spec: str = "native",
         if ci.task and not task_latch:
             suite = benchmarks.parse(s.spec)[0]
             s = _switch(s, benchmarks.cycle_task(s.spec, ci.task), seed, record,
-                        record_views, what="task",
+                        record_views, what="task", size=record_size,
                         nothing=f"the {suite} suite has one task setting; "
                                 f"[ / ] switches suite instead")
             display.set_caption(f"Skillcrane - {s.spec}")
@@ -352,6 +366,17 @@ def run_game(seed=None, record=None, env_spec: str = "native",
     return 0
 
 
+def _size(text: str, what: str) -> tuple:
+    """Parse a WxH argument, or exit saying what was wrong with it."""
+    try:
+        w, h = (int(v) for v in str(text).lower().split("x"))
+        if w <= 0 or h <= 0:
+            raise ValueError
+    except ValueError:
+        raise SystemExit(f"--{what} wants WxH, e.g. 1600x1000 (got {text!r})")
+    return (w, h)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Skillcrane teleop + data collection")
     ap.add_argument("--env", default="native", metavar="SUITE[:TASK]",
@@ -371,6 +396,14 @@ def main(argv=None) -> int:
                     default=None, const=DEFAULT_RECORD_DIR,
                     help="collect this session as a LeRobot dataset in DIR "
                          f"(default {DEFAULT_RECORD_DIR}); off when omitted")
+    ap.add_argument("--window", metavar="WxH", default=None,
+                    help="window size to open at, e.g. 1600x1000. The window is "
+                         "resizable either way -- drag its corner")
+    ap.add_argument("--record-size", metavar="WxH",
+                    default=f"{RECORD_SIZE[0]}x{RECORD_SIZE[1]}",
+                    help="size of recorded frames (default "
+                         f"{RECORD_SIZE[0]}x{RECORD_SIZE[1]}). Independent of the "
+                         "window: one dataset column has one image shape")
     ap.add_argument("--record-views", metavar="VIEWS", default=DEFAULT_RECORD_VIEWS,
                     help="cameras to record: main (default), all, or a "
                          "comma-separated list of view names. Every view is its "
@@ -381,12 +414,14 @@ def main(argv=None) -> int:
         import benchmarks
         print(benchmarks.describe())
         return 0
+    record_size = _size(a.record_size, "record-size")
     if a.headless:
         return run_headless(seed=2 if a.seed is None else a.seed,
                             record=a.record, env_spec=a.env,
-                            record_views=a.record_views)
+                            record_views=a.record_views, record_size=record_size)
     return run_game(seed=a.seed, record=a.record, env_spec=a.env,
-                    record_views=a.record_views)
+                    record_views=a.record_views, record_size=record_size,
+                    window=_size(a.window, "window") if a.window else None)
 
 
 if __name__ == "__main__":

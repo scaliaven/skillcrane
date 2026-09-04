@@ -34,6 +34,12 @@ ZOOM_RATE = 1.2                         # e-folds per second at full trigger
 # enough that a flicked stick does not whip the view, short enough that the
 # gripper never leaves the middle of the panel during a reach.
 FOLLOW_TAU = 0.30
+# Renderers are cached per panel size and each one owns a GL context. A window
+# drag emits a resize per mouse move, so the cache has to be bounded or a few
+# seconds of resizing leaks dozens of contexts. Four covers any one layout
+# (a main view plus three insets) with a little slack for the frame after a
+# resize and for the recorder's own fixed size.
+MAX_RENDERERS = 6
 
 
 class NativeEnv(TeleopEnv):
@@ -68,20 +74,31 @@ class NativeEnv(TeleopEnv):
 
     # -- rendering -----------------------------------------------------------
     def _renderer(self, width: int, height: int):
-        """One renderer per distinct panel size, kept for the session.
+        """One renderer per distinct panel size, most recently used last.
 
         A renderer's size is fixed at construction, and a multi-view layout asks
         for two or three different ones every frame -- rebuilding them per frame
-        would rebuild a GL context per frame.
+        would rebuild a GL context per frame. The cache is bounded (see
+        MAX_RENDERERS) because a resizable window makes the set of sizes
+        unbounded, not the two or three it used to be.
         """
         import mujoco
         key = (width, height)
-        r = self._renderers.get(key)
+        r = self._renderers.pop(key, None)
         if r is None:
             self._ensure_cam()
-            r = self._renderers[key] = mujoco.Renderer(self.game.m, height=height,
-                                                       width=width)
+            r = mujoco.Renderer(self.game.m, height=height, width=width)
+        self._renderers[key] = r                # move to the fresh end
+        while len(self._renderers) > MAX_RENDERERS:
+            self._close(self._renderers.pop(next(iter(self._renderers))))
         return r
+
+    @staticmethod
+    def _close(renderer) -> None:
+        try:
+            renderer.close()
+        except Exception:               # pragma: no cover - driver-dependent
+            pass
 
     def _ensure_cam(self):
         """Build the free camera and its scene options, once.
@@ -179,8 +196,5 @@ class NativeEnv(TeleopEnv):
 
     def close(self) -> None:
         for r in self._renderers.values():
-            try:
-                r.close()
-            except Exception:           # pragma: no cover - driver-dependent
-                pass
+            self._close(r)
         self._renderers.clear()
