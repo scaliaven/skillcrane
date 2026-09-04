@@ -109,6 +109,62 @@ DIR/meta/{info,episodes,tasks,episodes_stats}.{json,jsonl}
 
 which is the shape `lerobot` expects for training an ACT policy.
 
+### Example: collect an episode and read it back
+
+Recording needs the two optional dependencies, then it is just a flag:
+
+```sh
+pip install pyarrow pillow
+python main.py --record                  # play a round; ESC ends the episode
+# recording to runs/
+# ...on exit: recorded <n> ticks -> runs/data/chunk-000/episode_000000.parquet
+```
+
+`--headless` records the scripted pick-and-place instead, which is the quickest
+way to get a well-formed episode without touching a gamepad:
+
+```sh
+python main.py --headless --seed 2 --record runs/
+# recorded    1680 ticks -> runs/data/chunk-000/episode_000000.parquet
+```
+
+Read it back with plain pyarrow — no `lerobot` install needed to check the file:
+
+```python
+import pyarrow.parquet as pq
+t = pq.read_table("runs/data/chunk-000/episode_000000.parquet")
+print(t.num_rows, t.column_names)
+# 1680 ['observation.state', 'action', 'timestamp', 'frame_index',
+#       'episode_index', 'index', 'task_index', 'observation.images.cam']
+t.slice(900, 1).to_pylist()[0]
+# {'observation.state': [0.777, 0.016, 1.289, 1.842, 0.201, -0.001,   # j1..j6
+#                        0.016, 0.16, 0.158, 0.293],                  # grip, cube xyz
+#  'action': [0.0, 0.0, 0.0, 0.0, 1.0],                               # dx dy dz dyaw grip
+#  'timestamp': 9.0, 'frame_index': 900, 'episode_index': 0,
+#  'observation.images.cam': 'images/.../frame_000900.png'}
+```
+
+`meta/` carries what a `LeRobotDataset` reads at load time — `info.json` (fps
+100, the feature schema, `codebase_version` v2.1), `tasks.jsonl` (the language
+instruction), `episodes.jsonl` (one row per episode with its length), and
+`episodes_stats.jsonl` (per-field mean/std/min/max, which is what a policy's
+input normalisation uses):
+
+```sh
+cat runs/meta/episodes.jsonl
+# {"episode_index": 0, "tasks": ["Pick up the cube and place it in the target zone."], "length": 1680}
+```
+
+Two things to know before collecting in bulk:
+
+- **One run writes one episode, always `episode_000000`** — a second `--record`
+  into the same directory overwrites the first. Record to a fresh directory per
+  episode until the index is threaded through.
+- **Frames dominate the size.** One PNG per 100 Hz tick is ~37 KB, so the 16.8 s
+  episode above is 63 MB and a 90 s round is ~340 MB. `EpisodeRecorder` accepts
+  frames at a lower rate (pass `None` on the ticks you skip; the image column
+  repeats the last frame to stay 1:1 with the ticks).
+
 ## Benchmarks
 
 `python main.py --env <family>:<task>` drives an existing benchmark with the same
