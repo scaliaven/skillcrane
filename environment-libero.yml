@@ -1,7 +1,8 @@
 # Conda environment for the LIBERO benchmark ONLY.
 #
-#   conda env create -f environment-libero.yml
+#   CONDA_SUBDIR=osx-arm64 conda env create -f environment-libero.yml
 #   conda activate skillcrane-libero
+#   conda config --env --set subdir osx-arm64      # keep later installs arm64
 #   printf 'N\n' | python -c "import libero.libero"   # one-time config prompt
 #   python main.py --env libero:libero_spatial/0
 #
@@ -15,6 +16,11 @@
 #   libero 0.1.1  robosuite 1.4.0  robomimic 0.2.0  bddl 1.0.1
 #   mujoco 3.3.5  numpy 2.5.2  torch 2.14.0
 # All six suites load and step headless; assets download to ~/.cache/libero.
+#
+# CONDA_SUBDIR is needed on any Anaconda that reports `platform : osx-64` --
+# it builds x86_64 environments, and the `mujoco<3.12` pin below resolves to
+# 3.11.0, which publishes no x86_64 macOS wheel (the last one was 3.3.5), so
+# the install dies building mujoco from source. environment.yml explains it.
 name: skillcrane-libero
 channels:
   - conda-forge

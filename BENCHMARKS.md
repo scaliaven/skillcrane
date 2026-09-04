@@ -153,14 +153,14 @@ these so a refactor can't quietly flip one.
 
 ```sh
 pip install -r requirements.txt -r requirements-benchmarks.txt
-# or:  conda env create -f environment-benchmarks.yml
+# or:  CONDA_SUBDIR=osx-arm64 conda env create -f environment-benchmarks.yml
 ```
 
 **LIBERO** needs its own environment because it pins `robosuite==1.4.0`, whose
 controller API is not the 1.5 one our adapter uses:
 
 ```sh
-conda env create -f environment-libero.yml
+CONDA_SUBDIR=osx-arm64 conda env create -f environment-libero.yml
 conda activate skillcrane-libero
 printf 'N\n' | python -c "import libero.libero"    # one-time config prompt
 python main.py --env libero:libero_spatial/0

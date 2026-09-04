@@ -186,7 +186,7 @@ tasks, in its own environment).
 
 ```sh
 pip install -r requirements-benchmarks.txt      # robosuite, Meta-World, Fetch
-conda env create -f environment-libero.yml      # LIBERO (pins robosuite 1.4)
+CONDA_SUBDIR=osx-arm64 conda env create -f environment-libero.yml   # LIBERO (robosuite 1.4)
 ```
 
 They need `mujoco<3.12` — see [`BENCHMARKS.md`](BENCHMARKS.md) for why, plus the

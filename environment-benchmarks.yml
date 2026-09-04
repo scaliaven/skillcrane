@@ -1,12 +1,18 @@
 # Conda environment for Skillcrane + the shared benchmark families
 # (robosuite, Meta-World, Gymnasium-Robotics Fetch).
 #
-#   conda env create -f environment-benchmarks.yml
+#   CONDA_SUBDIR=osx-arm64 conda env create -f environment-benchmarks.yml
 #   conda activate skillcrane-bench
+#   conda config --env --set subdir osx-arm64      # keep later installs arm64
 #   python main.py --list-envs
 #
 # Keep this separate from your core Skillcrane environment: it pins mujoco below
 # 3.12 and numpy below 2, which the core project does not need.
+#
+# CONDA_SUBDIR is needed on any Anaconda that reports `platform : osx-64` --
+# it builds x86_64 environments, and the `mujoco<3.12` pin below resolves to
+# 3.11.0, which publishes no x86_64 macOS wheel (the last one was 3.3.5), so
+# the install dies building mujoco from source. environment.yml explains it.
 name: skillcrane-bench
 channels:
   - conda-forge
