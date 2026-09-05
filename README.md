@@ -60,6 +60,9 @@ python main.py --record DIR     # ... into DIR instead
 python main.py --record --record-views all   # ... logging every camera, not just one
 python main.py --window 1600x1000            # open a bigger window (drag to resize too)
 python main.py --record --record-size 640x480   # bigger frames in the dataset
+python main.py --eval 12        # score a policy over 12 seeds, no window
+python main.py --eval 50 --record runs/         # ... and collect them as a dataset
+python main.py --eval 1 --policy replay:runs/:0 # replay a recorded episode
 python gamepad_probe.py         # see what your pad reports, and how it is read
 ```
 
@@ -165,21 +168,23 @@ All three views are framed for *control*, which means close:
 | `input.py` | `GamepadReader`/`KeyboardReader` → `ControlInput` |
 | `render.py` | offscreen render + HUD |
 | `recorder.py` | LeRobot-format episode logging |
+| `policy.py` | scripted / replayed / learned policies + rollout and eval — **no pygame** |
 | `benchmarks/` | adapters: robosuite, RoboCasa, Meta-World, Fetch, LIBERO |
 | `main.py` | CLI entry point |
 
 `game.py` never imports `input.py` or `render.py`, so the whole sim/rules layer
-runs headless. See `CLAUDE.md` for the physics constraints that must not be
+runs headless. `policy.py` is on that side of the line too: it is what a data
+pipeline calls, so it must run where there is no display. See `CLAUDE.md` for the physics constraints that must not be
 "simplified" away.
 
 ## Tests
 
 ```sh
-python -m pytest -q          # 193 tests, ~11 s, no display and no gamepad needed
+python -m pytest -q          # 228 tests, ~15 s, no display and no gamepad needed
 ```
 
 Benchmark tests skip cleanly when the benchmark isn't installed, so a bare
-checkout stays green (193 passed / 17 skipped).
+checkout stays green (228 passed / 17 skipped).
 
 Physics tests assert on numbers — contact count, joint velocity, tracking error,
 cube height, score — and the grasp tests are parametrised over 12 random spawns,
@@ -190,7 +195,9 @@ all of which must pass.
 Data collection is **off by default**. `--record` turns it on (bare, it collects
 into `runs/`; `--record DIR` picks the directory) and writes one row per 100 Hz
 control tick — `observation.state` (6 joints + gripper + cube xyz), `action`
-(the operator's stick input), and a rendered frame — in LeRobot v2.1 layout:
+(the operator's stick input), what the rules made of it (`next.reward` is 1.0 on
+the tick that scored, `next.done` marks the last tick) and a rendered frame — in
+LeRobot v2.1 layout:
 
 ```
 DIR/data/chunk-000/episode_000000.parquet
@@ -235,7 +242,7 @@ way to get a well-formed episode without touching a gamepad:
 
 ```sh
 python main.py --headless --seed 2 --record runs/
-# recorded    1680 ticks -> runs/data/chunk-000/episode_000000.parquet
+# recorded    736 ticks -> runs/data/chunk-000/episode_000000.parquet (success=True)
 ```
 
 Read it back with plain pyarrow — no `lerobot` install needed to check the file:
@@ -244,22 +251,29 @@ Read it back with plain pyarrow — no `lerobot` install needed to check the fil
 import pyarrow.parquet as pq
 t = pq.read_table("runs/data/chunk-000/episode_000000.parquet")
 print(t.num_rows, t.column_names)
-# 1680 ['observation.state', 'action', 'timestamp', 'frame_index',
-#       'episode_index', 'index', 'task_index', 'observation.images.scene']
-t.slice(900, 1).to_pylist()[0]
-# {'observation.state': [0.777, 0.016, 1.289, 1.842, 0.201, -0.001,   # j1..j6
-#                        0.016, 0.16, 0.158, 0.293],                  # grip, cube xyz
-#  'action': [0.0, 0.0, 0.0, 0.0, 1.0],                               # dx dy dz dyaw grip
-#  'timestamp': 9.0, 'frame_index': 900, 'episode_index': 0,
-#  'observation.images.scene': 'images/.../frame_000900.png'}
+# 736 ['observation.state', 'action', 'timestamp', 'frame_index',
+#      'episode_index', 'index', 'task_index', 'next.reward', 'next.done',
+#      'observation.images.scene']
+t.slice(300, 1).to_pylist()[0]
+# {'observation.state': [-0.024, 0.246, 1.04, 1.758, 0.071, 0.102,   # j1..j6
+#                        0.016, 0.296, -0.006, 0.297],               # grip, cube xyz
+#  'action': [0.08, 0.311, 0.751, 0.0, 1.0],                         # dx dy dz dyaw grip
+#  'timestamp': 3.0, 'frame_index': 300, 'episode_index': 0,
+#  'next.reward': 0.0, 'next.done': False,
+#  'observation.images.scene': 'images/.../frame_000300.png'}
 ```
+
+Read the `action` row next to the `observation.state` row: those four numbers are
+the stick deflection that moved the arm to that state. They have to be, or the
+episode is untrainable — see [Policies, replay and eval](#policies-replay-and-eval)
+for the check that they are.
 
 The same run with every camera gives one image column per view:
 
 ```sh
 python main.py --headless --seed 2 --record runs/ --record-views all
 # recording views: scene, wrist, front, top
-# recorded    1680 ticks -> runs/data/chunk-000/episode_000000.parquet
+# recorded    736 ticks -> runs/data/chunk-000/episode_000000.parquet
 ls runs/images
 # observation.images.front  observation.images.scene
 # observation.images.top    observation.images.wrist
@@ -267,14 +281,20 @@ ls runs/images
 
 `meta/` carries what a `LeRobotDataset` reads at load time — `info.json` (fps
 100, the feature schema, `codebase_version` v2.1), `tasks.jsonl` (the language
-instruction), `episodes.jsonl` (one row per episode with its length), and
-`episodes_stats.jsonl` (per-field mean/std/min/max, which is what a policy's
-input normalisation uses):
+instruction), `episodes.jsonl` (one row per episode with its length **and whether
+it worked**), and `episodes_stats.jsonl` (per-field mean/std/min/max, which is
+what a policy's input normalisation uses):
 
 ```sh
 cat runs/meta/episodes.jsonl
-# {"episode_index": 0, "tasks": ["Pick up the cube and place it in the target zone."], "length": 1680}
+# {"episode_index": 0, "tasks": ["Pick up the cube and place it in the target zone."], "length": 736, "success": true, "score": 1}
 ```
+
+`success` and `score` are the ones to read before training. The usual ACT recipe
+learns from *successful* demonstrations only, and a round here can score more
+than once — the cube respawns, so a good operator scores several times in 90 s —
+which is why the count is there beside the boolean. Filtering is a read of one
+small file rather than a scan of every frame of every round.
 
 Two things to know before collecting in bulk:
 
@@ -282,11 +302,81 @@ Two things to know before collecting in bulk:
   reading the directory, not from a counter, so recording into the same `DIR`
   across separate runs of the program appends `episode_000001`,
   `episode_000002`, … and `meta/` stays consistent with them.
-- **Frames dominate the size.** One 320×240 PNG per 100 Hz tick is ~37 KB, so
-  the 16.8 s episode above is 63 MB for one camera, 210 MB for all four, and a
-  90 s round is ~340 MB per camera. `EpisodeRecorder` accepts frames at a lower
-  rate (pass `None` on the ticks you skip; each image column repeats its last
-  frame to stay 1:1 with the ticks), and `--record-views` is the other dial.
+- **Frames dominate the size.** One 320×240 PNG per 100 Hz tick is ~40 KB, so
+  the 7.4 s episode above is 29 MB for one camera and 84 MB for all four; at
+  640×480 two cameras cost 94 MB for the same 7.4 s, and a 90 s round is ~360 MB
+  per camera at 320×240. `EpisodeRecorder` accepts frames at a lower rate (pass
+  `None` on the ticks you skip; each image column repeats its last frame to stay
+  1:1 with the ticks), and `--record-views` is the other dial.
+
+## Policies, replay and eval
+
+`--record` fills a dataset; `--eval` is the other end of the same pipe. It runs a
+policy over N seeds with no window and prints a per-seed table:
+
+```sh
+python main.py --eval 6 --seed 0
+# eval       native  policy scripted  seeds 0..5
+#   seed   ticks  score   t_score  result
+#      0     717      1     5.30s  ok
+#      1     714      1     5.27s  ok
+#      2     736      1     5.49s  ok
+#      3     786      1     5.99s  ok
+#      4     791      1     6.03s  ok
+#      5     758      1     5.70s  ok
+# success 6/6 = 100%
+```
+
+Seeds are consecutive from `--seed`, so two policies can be compared on the same
+worlds — an average over different spawns is not a comparison. The command exits
+non-zero unless every episode succeeded.
+
+`--policy` chooses what drives it:
+
+| `--policy` | what it is |
+|---|---|
+| `scripted` (default) | the built-in demonstrator: approach → grasp → carry → release |
+| `replay:DIR[:EP]` | play back the `action` column of a recorded episode |
+| `act:PATH` | a LeRobot checkpoint — **untested here**, `lerobot` is not installed on this machine |
+
+Every one of them emits the same five numbers the sticks do — `dx, dy, dz, dyaw,
+grip` — and goes through the same `TeleopEnv.step`, so a demonstration, a replay
+and a trained network are scored by identical rules.
+
+Add `--record` to collect the rollouts, one episode per seed. This is how you get
+a few hundred demonstrations without touching a gamepad:
+
+```sh
+python main.py --eval 50 --record runs/ --record-views wrist,front
+```
+
+### Replay is the dataset integrity check
+
+This is the reason `ReplayPolicy` exists. A recording can be perfectly
+well-formed — every column present, every shape right, every PNG on disk — and
+still be untrainable, because the numbers in `action` are not the numbers that
+produced the motion in `observation.state` beside them. Nothing else in the
+project can see that. Replay can:
+
+```sh
+python main.py --eval 2 --seed 0 --record /tmp/d      # collect seeds 0 and 1
+python main.py --eval 1 --seed 0 --policy replay:/tmp/d:0
+# success 1/1 = 100%     <- same ticks, same score, same instant it scored
+python main.py --eval 1 --seed 5 --policy replay:/tmp/d:0
+# success 0/1 = 0%       <- and it can fail, so the check above means something
+```
+
+Replaying an episode into the seed it was collected at reproduces it to within
+float32 rounding (max state divergence 1.6e-7 over ~700 ticks; the cube lands in
+exactly the same place). Replaying it into a different world misses, which is
+what stops the check from being vacuous.
+
+It was worth building: `--headless --record` used to log `[0, 0, 0, 0, grip]` on
+every tick of a completed pick-and-place. The scripted demo moved the Cartesian
+target directly — correct for a physics test, silently useless as a
+demonstration — so every headless dataset was a constant action column beside a
+moving arm. The file looked fine. `main.py --headless` now drives through
+`policy.ScriptedPickPlace`, which walks the same waypoints through the sticks.
 
 ## Benchmarks
 

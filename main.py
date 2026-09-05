@@ -9,6 +9,9 @@
     python main.py --record DIR           ... into DIR instead (LeRobot format)
     python main.py --record --record-views all      log every camera, not just one
     python main.py --window 1600x1000     open a bigger window (it also resizes)
+    python main.py --eval 12              score a policy over 12 seeds, no window
+    python main.py --eval 12 --record D   ... and collect them as a dataset
+    python main.py --eval 1 --policy replay:runs/   replay a recorded episode
 
 Runs under plain `python`, not `mjpython`: environments render offscreen and
 pygame owns the window, so nothing fights over the macOS main thread.
@@ -38,7 +41,6 @@ from dataclasses import dataclass, field
 import numpy as np
 
 import scene
-from game import drive_to, scripted_grasp
 
 MAX_STEPS_PER_FRAME = 8      # keeps a slow env from spiralling on catch-up
 DEFAULT_RECORD_DIR = "runs/"  # where a bare --record collects to
@@ -48,6 +50,7 @@ DEFAULT_RECORD_DIR = "runs/"  # where a bare --record collects to
 # fixed-size views, at --record-size, independent of the window.
 RECORD_SIZE = (320, 240)
 DEFAULT_RECORD_VIEWS = "main"
+DEFAULT_POLICY = "scripted"
 
 
 @dataclass
@@ -108,6 +111,7 @@ def run_headless(seed: int = 2, record=None, env_spec: str = "native",
                                    record_size=record_size)
 
     import benchmarks
+    from policy import ScriptedPickPlace, rollout
 
     # Goes through the adapter rather than Game directly, so the headless run
     # records through exactly the same camera path as a played round.
@@ -123,27 +127,37 @@ def run_headless(seed: int = 2, record=None, env_spec: str = "native",
         print("recording views:", ", ".join(sizes) or "(none)",
               f"at {record_size[0]}x{record_size[1]}")
 
-    def on_tick(game):
-        if rec is None:
-            return
-        rec.add(game.observation(), [0, 0, 0, 0, float(game.closed)],
-                env.frames(sizes))
+    # The policy, not game.scripted_pick_and_place, even though they walk the
+    # same waypoints: the script moves the Cartesian target directly, so a round
+    # recorded from it logged [0, 0, 0, 0, grip] on every tick while the arm
+    # crossed the table. The dataset was unlearnable and looked fine.
+    pol = ScriptedPickPlace()
+    reported = set()
 
-    scripted_grasp(g, on_tick=on_tick)
-    print("lift       cube_z", round(float(g.cube_pos()[2]), 3), " held:", g.held())
-    drive_to(g, [*g.target, 0.30], True, 400, on_tick=on_tick)
-    drive_to(g, [*g.target, 0.09], True, 250, on_tick=on_tick)
-    print("transit    |qvel|", round(float(np.linalg.norm(g.d.qvel[g.arm.dof])), 3))
-    scored = False
-    for _ in range(200):
-        scored |= bool(g.step(0, 0, 0, 0, False))
-        on_tick(g)
+    def on_tick(env, action, scored):
+        # The phase has already advanced when a leg finishes, so seeing a new
+        # name here means the previous one just completed -- which is where the
+        # two progress lines belong.
+        if pol.phase not in reported:
+            reported.add(pol.phase)
+            if pol.phase == "carry":
+                print("lift       cube_z", round(float(g.cube_pos()[2]), 3),
+                      " held:", g.held())
+            elif pol.phase == "release":
+                print("transit    |qvel|",
+                      round(float(np.linalg.norm(g.d.qvel[g.arm.dof])), 3))
+        if rec is not None:
+            rec.add(env.observation(), action, env.frames(sizes),
+                    reward=float(scored))
+
+    r = rollout(env, pol, on_tick=on_tick, seed=seed)
     print("final      ", np.round(g.cube_pos(), 3), " score:", g.score,
-          "->", "SCORED" if scored or g.score else "MISS")
+          "->", "SCORED" if r.success else "MISS")
     if rec is not None:
-        print("recorded   ", len(rec), "ticks ->", rec.save())
+        print("recorded   ", len(rec), "ticks ->", rec.save(),
+              f"(success={rec.success()})")
     env.close()
-    return 0 if g.score else 1
+    return 0 if r.success else 1
 
 
 def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60,
@@ -166,16 +180,108 @@ def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60,
     scored = 0
     for i in range(ticks):
         action = (0.0, 0.0, -0.4, 0.0, i > ticks // 2)     # descend, then close
-        scored += bool(env.step(*action, env.control_dt))
+        hit = bool(env.step(*action, env.control_dt))
+        scored += hit
         if rec is not None:
             rec.add(env.observation(),
-                    [*action[:4], float(action[4])], env.frames(sizes))
+                    [*action[:4], float(action[4])], env.frames(sizes),
+                    reward=float(hit))
     hud = env.hud()
     print(f"after {ticks} ticks: ee {np.round(hud.ee, 3)}  score {hud.score}")
     if rec is not None:
         print("recorded   ", len(rec), "ticks ->", rec.save())
     env.close()
     return 0
+
+
+def _make_policy(spec: str, size=RECORD_SIZE):
+    """Turn a --policy string into something that hands back a Policy.
+
+    Same shape as --env: a kind, a colon, and what the kind needs. Returns a
+    factory rather than an instance because --eval builds one per seed, and a
+    replayed or learned policy is expensive to construct but cheap to rewind.
+    """
+    import policy as pol
+
+    kind, _, rest = str(spec).partition(":")
+    if kind == "scripted":
+        return lambda: pol.ScriptedPickPlace()
+    if kind == "replay":
+        root, ep = rest, 0
+        head, sep, tail = rest.rpartition(":")
+        # "replay:runs" is episode 0; "replay:runs:3" is episode 3. Split from
+        # the right and only when the tail is digits, so a Windows-ish or
+        # colon-bearing path is not mistaken for an episode number.
+        if sep and tail.isdigit():
+            root, ep = head, int(tail)
+        if not root:
+            raise SystemExit("--policy replay:DIR wants the dataset directory")
+        loaded = pol.ReplayPolicy.from_dataset(root, ep)
+        print(f"replaying episode {ep} of {root}: {len(loaded)} ticks")
+        return lambda: loaded          # reset() rewinds it; no need to reload
+    if kind in ("act", "lerobot"):
+        if not rest:
+            raise SystemExit("--policy act:PATH wants a checkpoint directory")
+        loaded = pol.LeRobotPolicy(rest, size=size)
+        return lambda: loaded
+    raise SystemExit(f"unknown --policy {spec!r}; want scripted, "
+                     f"replay:DIR[:EP] or act:PATH")
+
+
+def run_eval(episodes: int, seed=None, policy_spec: str = DEFAULT_POLICY,
+             record=None, env_spec: str = "native",
+             record_views: str = DEFAULT_RECORD_VIEWS, record_size=RECORD_SIZE) -> int:
+    """Score a policy over `episodes` seeds, headless, and report per seed.
+
+    The seeds are consecutive from --seed so a run is reproducible and two
+    policies can be compared on the same worlds -- an average over different
+    spawns is not a comparison. Exits non-zero unless every episode succeeded:
+    the number to read is the table, but a rig where the scripted policy stops
+    scoring is broken, and CI should hear about it.
+    """
+    import benchmarks
+    from policy import evaluate, summarise
+
+    if policy_spec == DEFAULT_POLICY and env_spec != "native":
+        # Caught here so the message arrives before an env is built, rather than
+        # as a TypeError out of the first waypoint.
+        raise SystemExit(
+            f"--policy scripted is native-only; {env_spec} has no cube of ours. "
+            f"Use --policy replay:DIR or act:PATH, or --env native")
+    seed = 0 if seed is None else seed
+    seeds = list(range(seed, seed + max(1, int(episodes))))
+    make_policy = _make_policy(policy_spec, record_size)
+    print(f"eval       {env_spec}  policy {policy_spec}  seeds {seeds[0]}..{seeds[-1]}")
+
+    # One episode per seed, so the recorder is opened and closed around each
+    # rollout rather than spanning the whole run: a dataset wants an episode
+    # boundary wherever the world was rebuilt.
+    live = {"rec": None, "sizes": {}}
+
+    def on_start(s, env):
+        if record is None:
+            return
+        live["rec"] = _new_recorder(record, env)
+        live["sizes"] = _record_sizes(env, record_views, record_size)
+
+    def on_tick(env, action, scored):
+        rec = live["rec"]
+        if rec is not None:
+            rec.add(env.observation(), action, env.frames(live["sizes"]),
+                    reward=float(scored))
+
+    def on_episode(r):
+        rec = live["rec"]
+        if rec is not None and len(rec):
+            print(f"  seed {r.seed}: {len(rec)} ticks -> {rec.save()} "
+                  f"(success={rec.success()})")
+        live["rec"] = None
+
+    results = evaluate(lambda s: benchmarks.make(env_spec, seed=s), make_policy,
+                       seeds, on_start=on_start, on_tick=on_tick,
+                       on_episode=on_episode)
+    print(summarise(results))
+    return 0 if all(r.success for r in results) else 1
 
 
 def _ring(items, current) -> str:
@@ -371,14 +477,18 @@ def run_game(seed=None, record=None, env_spec: str = "native",
         scored = False
         steps = 0
         while accum >= s.env.control_dt and steps < MAX_STEPS_PER_FRAME:
-            scored |= bool(s.env.step(dx, dy, ci.mz, ci.dyaw, ci.grip,
-                                      s.env.control_dt))
+            hit = bool(s.env.step(dx, dy, ci.mz, ci.dyaw, ci.grip,
+                                  s.env.control_dt))
+            scored |= hit
             accum -= s.env.control_dt
             steps += 1
             if s.rec is not None:
+                # Per tick, not per frame: `scored` is the flash on the HUD and
+                # covers the whole frame, but the reward column has to name the
+                # one tick the cube actually landed.
                 s.rec.add(s.env.observation(),
                           [dx, dy, ci.mz, ci.dyaw, float(ci.grip)],
-                          logged if steps == 1 else None)
+                          logged if steps == 1 else None, reward=float(hit))
 
         suite, task = benchmarks.parse(s.spec)
         display.draw(s.env.hud(), views, scored, frame_dt,
@@ -435,6 +545,14 @@ def main(argv=None) -> int:
                          "each suite is installed")
     ap.add_argument("--headless", action="store_true",
                     help="run a scripted pick-and-place with no window")
+    ap.add_argument("--eval", metavar="N", type=int, default=None,
+                    help="score a policy over N seeds (from --seed) with no "
+                         "window, and print a per-seed table. Exits non-zero "
+                         "unless every episode succeeded")
+    ap.add_argument("--policy", metavar="SPEC", default=DEFAULT_POLICY,
+                    help="what drives --eval: scripted (default), "
+                         "replay:DIR[:EP] to play back a recorded episode, or "
+                         "act:PATH for a LeRobot checkpoint")
     ap.add_argument("--seed", type=int, default=None, help="spawn / task seed")
     # Off unless asked for: bare --record collects into DEFAULT_RECORD_DIR,
     # --record DIR picks the directory.
@@ -461,6 +579,10 @@ def main(argv=None) -> int:
         print(benchmarks.describe())
         return 0
     record_size = _size(a.record_size, "record-size")
+    if a.eval is not None:
+        return run_eval(a.eval, seed=a.seed, policy_spec=a.policy,
+                        record=a.record, env_spec=a.env,
+                        record_views=a.record_views, record_size=record_size)
     if a.headless:
         return run_headless(seed=2 if a.seed is None else a.seed,
                             record=a.record, env_spec=a.env,

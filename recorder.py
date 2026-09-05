@@ -5,6 +5,13 @@ the rendered camera frames -- written as LeRobot v2.1: parquet under data/, PNG
 frames under images/, and the meta/ sidecars a LeRobotDataset needs to load.
 That is the shape `lerobot/scripts/train.py --policy.type=act` expects.
 
+Every tick also carries what the rules made of it -- `next.reward` is 1.0 on
+the tick that scored -- and every episode records whether it scored at all. That
+is not decoration: the standard ACT recipe trains on *successful* demonstrations,
+and a directory of rounds with no success flag cannot be filtered into one. A
+round here can score more than once (the cube respawns), so the episode carries a
+count as well as a boolean.
+
 A tick can carry more than one camera: pass `add()` a {view: frame} dict and
 each view becomes its own `observation.images.<view>` column, which is how
 LeRobot names a multi-camera rig. One array is still one camera, under
@@ -29,6 +36,11 @@ IMAGE_PREFIX = "observation.images."
 STATE_NAMES = [f"j{i}" for i in range(1, 7)] + ["grip", "cube_x", "cube_y", "cube_z"]
 # action = what the operator asked for this tick, not what the joints did
 ACTION_NAMES = ["dx", "dy", "dz", "dyaw", "grip"]
+
+# LeRobot's names for "what happened next". `next.done` marks the last tick of
+# the episode, which is the only way to find episode boundaries once several
+# parquets are concatenated into one training set.
+REWARD_COLUMN, DONE_COLUMN = "next.reward", "next.done"
 
 
 def next_episode_index(root) -> int:
@@ -71,15 +83,24 @@ class EpisodeRecorder:
         self.states: list = []
         self.actions: list = []
         self.frames: list = []
+        self.rewards: list = []
 
     def __len__(self) -> int:
         return len(self.states)
 
-    def add(self, state, action, frame=None) -> None:
-        """One control tick. `frame` is an RGB array, or {view: RGB}, or None."""
+    def add(self, state, action, frame=None, reward=0.0) -> None:
+        """One control tick. `frame` is an RGB array, or {view: RGB}, or None.
+
+        `reward` is what the environment's step returned for this tick -- True
+        from `TeleopEnv.step` means the round scored here. It defaults to 0 so
+        that a caller which does not care about outcomes is unaffected, but a
+        recording made that way is unfilterable, which is why every caller in
+        this repo passes it.
+        """
         self.states.append(np.asarray(state, dtype=np.float32))
         self.actions.append(np.asarray(action, dtype=np.float32))
         self.frames.append(self._views(frame))
+        self.rewards.append(float(reward))
 
     def _views(self, frame) -> dict:
         """Normalise a tick's frames to {image key: array}, dropping empties."""
@@ -94,6 +115,20 @@ class EpisodeRecorder:
     def image_column(view: str) -> str:
         """LeRobot column for a camera: "wrist" -> observation.images.wrist."""
         return view if view.startswith(IMAGE_PREFIX) else IMAGE_PREFIX + view
+
+    def score(self) -> int:
+        """How many times this episode scored."""
+        return int(sum(r > 0 for r in self.rewards))
+
+    def success(self) -> bool:
+        """Did this episode accomplish the task at least once?
+
+        The filter the ACT recipe wants. A native round is not one-shot -- the
+        cube respawns and a good operator scores several times in 90 s -- so
+        `score()` is the interesting number and this is the yes/no derived
+        from it.
+        """
+        return self.score() > 0
 
     def image_keys(self) -> list:
         """Every image column recorded, in the order the views first appeared."""
@@ -127,6 +162,11 @@ class EpisodeRecorder:
             "episode_index": [ep] * n,
             "index": list(range(n)),
             "task_index": [0] * n,
+            REWARD_COLUMN: list(self.rewards),
+            # Only the final tick. An episode ends because the round ended or
+            # the operator switched, never because a score happened -- the cube
+            # respawns and the same episode carries on.
+            DONE_COLUMN: [i == n - 1 for i in range(n)],
         }
         cols.update(img_paths)
         table = pa.table(cols)
@@ -181,6 +221,8 @@ class EpisodeRecorder:
             "episode_index": {"dtype": "int64", "shape": [1], "names": None},
             "index": {"dtype": "int64", "shape": [1], "names": None},
             "task_index": {"dtype": "int64", "shape": [1], "names": None},
+            REWARD_COLUMN: {"dtype": "float32", "shape": [1], "names": None},
+            DONE_COLUMN: {"dtype": "bool", "shape": [1], "names": None},
         }
         for key in image_keys:
             h, w, c = shapes.get(key, (0, 0, 0))
@@ -204,8 +246,12 @@ class EpisodeRecorder:
         }
         _write_json(meta / "info.json", info)
         _append_jsonl(meta / "tasks.jsonl", {"task_index": 0, "task": self.task}, key="task_index")
+        # success/score live here rather than only in the parquet so that
+        # choosing which episodes to train on is a read of one small file, not a
+        # scan of every frame of every round.
         _append_jsonl(meta / "episodes.jsonl",
-                      {"episode_index": ep, "tasks": [self.task], "length": n},
+                      {"episode_index": ep, "tasks": [self.task], "length": n,
+                       "success": self.success(), "score": self.score()},
                       key="episode_index")
         _append_jsonl(meta / "episodes_stats.jsonl",
                       {"episode_index": ep, "stats": self._stats()},

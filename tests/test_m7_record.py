@@ -262,3 +262,89 @@ def test_next_episode_index_ignores_files_that_are_not_episodes(tmp_path):
     (data / "notes.parquet").touch()
     (data / "episode_bogus.parquet").touch()
     assert next_episode_index(tmp_path) == 5
+
+
+# --- what the round made of each tick ---------------------------------------
+#
+# An episode used to record only what happened, never whether it worked. The
+# standard ACT recipe trains on *successful* demonstrations, so a directory of
+# rounds with no success flag cannot be filtered into a training set at all --
+# and the flag has to survive to disk, because that filtering happens long after
+# the process that collected it has exited.
+
+def test_reward_and_done_columns_are_written(tmp_path):
+    import pyarrow.parquet as pq
+    from recorder import DONE_COLUMN, REWARD_COLUMN
+
+    rec = EpisodeRecorder(tmp_path)
+    for i in range(5):
+        rec.add(np.zeros(10), np.zeros(5), reward=1.0 if i == 3 else 0.0)
+    t = pq.read_table(rec.save())
+
+    assert t.column(REWARD_COLUMN).to_pylist() == [0, 0, 0, 1, 0]
+    # done marks the end of the episode, not the score: the cube respawns and
+    # the same round carries on.
+    assert t.column(DONE_COLUMN).to_pylist() == [False, False, False, False, True]
+
+
+def test_a_tick_defaults_to_no_reward(tmp_path):
+    """Callers that predate outcomes still write a valid, if unfilterable, file."""
+    import pyarrow.parquet as pq
+    from recorder import REWARD_COLUMN
+
+    rec = EpisodeRecorder(tmp_path)
+    rec.add(np.zeros(10), np.zeros(5))
+    t = pq.read_table(rec.save())
+    assert t.column(REWARD_COLUMN).to_pylist() == [0.0]
+
+
+def test_the_episode_records_whether_it_succeeded(tmp_path):
+    rec = EpisodeRecorder(tmp_path)
+    for i in range(9):
+        rec.add(np.zeros(10), np.zeros(5), reward=float(i in (2, 7)))
+    rec.save()
+
+    assert rec.success() is True
+    assert rec.score() == 2, "a round can score more than once; count them"
+    eps = [json.loads(x) for x in
+           (tmp_path / "meta" / "episodes.jsonl").read_text().splitlines()]
+    assert eps[0]["success"] is True and eps[0]["score"] == 2
+
+
+def test_a_round_that_never_scored_is_labelled_as_such(tmp_path):
+    """The one that has to be right: an unsuccessful demo must be filterable out."""
+    rec = EpisodeRecorder(tmp_path, episode_index=0)
+    for _ in range(6):
+        rec.add(np.zeros(10), np.zeros(5))
+    rec.save()
+
+    assert rec.success() is False and rec.score() == 0
+    eps = [json.loads(x) for x in
+           (tmp_path / "meta" / "episodes.jsonl").read_text().splitlines()]
+    assert eps[0]["success"] is False and eps[0]["score"] == 0
+
+
+def test_success_is_per_episode_not_per_directory(tmp_path):
+    good = EpisodeRecorder(tmp_path, episode_index=0)
+    bad = EpisodeRecorder(tmp_path, episode_index=1)
+    for i in range(4):
+        good.add(np.zeros(10), np.zeros(5), reward=float(i == 1))
+        bad.add(np.zeros(10), np.zeros(5))
+    good.save()
+    bad.save()
+
+    eps = {e["episode_index"]: e for e in
+           (json.loads(x) for x in
+            (tmp_path / "meta" / "episodes.jsonl").read_text().splitlines())}
+    assert eps[0]["success"] is True and eps[1]["success"] is False
+
+
+def test_the_outcome_columns_are_declared_in_info(tmp_path):
+    from recorder import DONE_COLUMN, REWARD_COLUMN
+
+    rec = EpisodeRecorder(tmp_path)
+    rec.add(np.zeros(10), np.zeros(5), reward=1.0)
+    rec.save()
+    features = json.loads((tmp_path / "meta" / "info.json").read_text())["features"]
+    assert features[REWARD_COLUMN]["dtype"] == "float32"
+    assert features[DONE_COLUMN]["dtype"] == "bool"

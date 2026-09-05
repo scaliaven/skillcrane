@@ -85,3 +85,45 @@ def test_headless_cli_runs_without_pygame():
     """)
     assert r.returncode == 0, f"stdout:\\n{r.stdout}\\nstderr:\\n{r.stderr}"
     assert "EXIT 0" in r.stdout, r.stdout
+
+
+def test_policy_runs_without_pygame():
+    """policy.py is on game.py's side of the line, not render.py's.
+
+    It is what a data pipeline calls -- collect demos, replay them, evaluate a
+    checkpoint -- so it has to run on a box with no display for the same reason
+    game.py does.
+    """
+    r = run_without_pygame("""
+        import sys
+        import numpy as np
+        from game import Game
+        from policy import ReplayPolicy, ScriptedPickPlace, rollout
+
+        g = Game(seed=4)
+        acts = []
+        a = rollout(g, ScriptedPickPlace(), seed=4,
+                    on_tick=lambda env, act, s: acts.append(act))
+        assert a.success, "the scripted policy did not score headless"
+
+        g2 = Game(seed=4)
+        b = rollout(g2, ReplayPolicy(np.asarray(acts, dtype=np.float32)), seed=4)
+        assert b.score == a.score, "replay did not reproduce it headless"
+        assert "pygame" not in sys.modules, "policy.py pulled in pygame"
+        print("OK ticks=%d score=%d" % (b.ticks, b.score))
+    """)
+    assert r.returncode == 0, f"stdout:\\n{r.stdout}\\nstderr:\\n{r.stderr}"
+    assert "OK" in r.stdout, r.stdout
+
+
+def test_eval_cli_runs_without_pygame():
+    """`python main.py --eval N` is the headless acceptance run for a policy."""
+    r = run_without_pygame("""
+        import sys
+        from main import main
+        code = main(["--eval", "2", "--seed", "0"])
+        assert "pygame" not in sys.modules, "the eval path imported pygame"
+        print("EXIT", code)
+    """)
+    assert r.returncode == 0, f"stdout:\\n{r.stdout}\\nstderr:\\n{r.stderr}"
+    assert "EXIT 0" in r.stdout, r.stdout

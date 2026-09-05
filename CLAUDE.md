@@ -5,7 +5,8 @@ Target platform is **macOS on Apple Silicon**.
 
 It began as a manipulation game and became a demonstration-collection rig: the
 scoring loop is the teleop interface, and every round played is an
-imitation-learning episode (`--record`, LeRobot format, trains an ACT policy).
+imitation-learning episode (`--record`, LeRobot format, trains an ACT policy) --
+and `--eval` runs one back through the same loop and scores it.
 That is why the sim/rules layer stays free of UI code — `game.py` is the part a
 data pipeline consumes, and it must never need a window.
 
@@ -28,11 +29,13 @@ skillcrane/
                   (SDL standard layout when available, raw indices otherwise)
   render.py       offscreen render + HUD drawing + multi-view layouts
   recorder.py     LeRobot-format episode logging (optional deps)
+  policy.py       Policy protocol + ScriptedPickPlace / ReplayPolicy /
+                  LeRobotPolicy, rollout(), evaluate(). NO pygame.
   benchmarks/     adapters: native, robosuite, RoboCasa, Meta-World, Fetch,
                   LIBERO. A *suite* is a benchmark, a *task* is a setting in
                   one; registry.py cycles them separately.
   main.py         CLI entry: --headless, --seed, --record, --record-views,
-                  --env, --list-envs
+                  --env, --list-envs, --eval, --policy
   tests/
 ```
 
@@ -45,6 +48,9 @@ inside its factory.
 Hard rule: `game.py` must be importable and fully runnable without pygame or a
 display. `tests/test_no_pygame.py` enforces this in a subprocess where
 `import pygame` raises — do not weaken it. Every acceptance test runs headless.
+
+`policy.py` sits on `game.py`'s side of the pygame line, not `render.py`'s: it
+is what a data pipeline calls, so `test_no_pygame.py` covers it too.
 
 Note the dependency direction: `game.py` never imports `input.py`. `Game.step`
 takes plain world-frame floats, and the camera-relative rotation lives in
@@ -82,6 +88,50 @@ machine. It reuses `robosuite_env.py` (importing `robocasa` registers its
 kitchens in robosuite's registry); the robot name and default task are read off
 its docs, not measured, and the factory tries `PandaOmron` then `PandaMobile`
 because the name changed between releases.
+
+### Policies -- and why replay is the only dataset test that matters
+
+`recorder.py` fills a dataset and `policy.py` reads one back. Everything here
+emits the same five numbers the sticks do -- `(dx, dy, dz, dyaw, grip)` -- and
+goes through the same `TeleopEnv.step`, so a demonstration, a replay and a
+trained checkpoint are scored by identical rules and recorded through identical
+columns. `--eval N` runs one over N consecutive seeds and prints a per-seed
+table; `--policy` picks between `scripted`, `replay:DIR[:EP]` and `act:PATH`.
+
+Two findings behind it:
+
+- **A well-formed dataset can still be untrainable, and nothing else here can
+  see that.** `--headless --record` logged `[0, 0, 0, 0, grip]` on every tick of
+  a completed pick-and-place: `game.scripted_pick_and_place` moves `game.tgt`
+  directly (right for a physics test, it isolates the arm from the input layer)
+  so the action beside the motion was not the action that caused it. Every
+  column was present, every shape correct, every PNG on disk. `ReplayPolicy` is
+  the check -- same seed, same actions, same outcome -- and `main.py --headless`
+  now drives through `ScriptedPickPlace`, which walks the identical waypoints
+  through the sticks. Replay reproduces an episode to 1.6e-7 of state over ~700
+  ticks; replayed into a *different* seed it misses, which is what stops the
+  check from being vacuous, and `test_m9_policy.py` asserts both directions.
+- **Arriving is not stopping.** The commanded target is pure integration, so it
+  reaches a waypoint while the arm is still crossing the tolerance ball at
+  0.3 m/s -- position tolerance cannot express "settled" at any radius. The two
+  legs that end in a gripper action carry `settle=SETTLE_QVEL` (0.05 rad/s) as
+  well; without it the fingers closed at |qvel| ~0.7 and opened at ~0.9, so
+  every demonstration grasped and released from a moving gripper. Costs ~15
+  ticks of a ~700-tick round. Each waypoint's tick budget is the old script's
+  fixed count, so a leg that never settles falls back to exactly the behaviour
+  the grasp tests were written against.
+
+`LeRobotPolicy` is **untested here** -- `lerobot` is not installed on this
+machine -- in the same way RoboCasa is: written against the documented
+`from_pretrained` / `select_action` interface, not measured.
+
+Every recorded tick carries `next.reward` (1.0 on the tick that scored) and
+`next.done` (the last tick), and every episode's row in `meta/episodes.jsonl`
+carries `success` and `score`. Without them a directory of rounds cannot be
+filtered into the successful demonstrations the ACT recipe trains on, and that
+filtering happens long after the collecting process has exited. `score` is a
+count, not a bool, because a native round is not one-shot -- the cube respawns
+and a good operator scores several times in 90 s.
 
 ### Cameras and views
 
@@ -229,11 +279,12 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 | M4 | game rules | `test_m4_rules.py` | 17 passed |
 | M5 | input layer | `test_m5_input.py` | 54 passed |
 | M6 | render + HUD | `test_m6_render.py` | 25 passed |
-| M7 | recording (stretch) | `test_m7_record.py` | 17 passed |
+| M7 | recording (stretch) | `test_m7_record.py` | 23 passed |
 | M8 | benchmark adapters | `test_benchmarks.py` | 39 passed, 17 skipped |
-| — | hard rule | `test_no_pygame.py` | 4 passed |
+| M9 | policies + replay + eval | `test_m9_policy.py` | 24 passed |
+| — | hard rule | `test_no_pygame.py` | 6 passed |
 
-Totals: **196 passed / 17 skipped** with no benchmarks installed. The counts
+Totals: **228 passed / 17 skipped** with no benchmarks installed. The counts
 with the benchmark suites installed have not been re-measured since the
 switching work.
 
