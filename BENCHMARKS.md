@@ -113,7 +113,8 @@ i.e. `enum == np.int32`, and that reflected direction started returning False:
 
 Every robosuite env then dies in `_setup_references` with a bare
 `AssertionError`. Bisected to 3.12.0 exactly; hence `mujoco<3.12`. The core
-Skillcrane suite passes on both sides of that line (103 tests, 8.5 s either way),
+Skillcrane suite passes on both sides of that line (measured at 103 tests, 8.5 s
+either way; the suite is 230 tests now and the pin is unchanged),
 so sharing an environment costs nothing but the pin.
 
 **2. `egl_probe` won't build on CMake 4.** LIBERO → `robomimic==0.2.0` →
@@ -225,6 +226,10 @@ python main.py --env robosuite:Lift --record runs/lift
 
 | environment | result |
 |---|---|
-| core only (no benchmarks) | 116 passed, 10 skipped |
-| + robosuite / Meta-World / Fetch | 125 passed, 1 skipped |
-| LIBERO env | 117 passed, 9 skipped |
+| core only (no benchmarks) | 230 passed, 17 skipped |
+| + robosuite / Meta-World / Fetch | 125 passed, 1 skipped † |
+| LIBERO env | 117 passed, 9 skipped † |
+
+† measured when the adapters landed and **not re-measured since** — none of these
+suites is installed on this machine, so the two rows below the first are the last
+numbers actually observed, not current ones. The core row is current.

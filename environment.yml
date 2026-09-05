@@ -4,7 +4,7 @@
 #   conda activate skillcrane
 #   conda config --env --set subdir osx-arm64      # keep later installs arm64
 #   python main.py                 # play
-#   python -m pytest -q            # 116 passed, 10 skipped
+#   python -m pytest -q            # 230 passed, 17 skipped
 #
 # This is the equivalent of `pip install -r requirements.txt` in a venv, and is
 # what you want for day-to-day work on the arm. It deliberately does NOT pin

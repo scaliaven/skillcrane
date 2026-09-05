@@ -216,8 +216,8 @@ Recorded frames are **not** the ones on screen. They are rendered separately at
 a fixed size — `--record-size`, 320×240 by default — because a dataset column has
 one image shape for the whole episode, while the operator can change the layout
 mid-round and resize the window. Bigger frames cost disk in a straight line: the
-16.8 s headless episode is 63 MB with one camera at 320×240 and 215 MB with two
-at 640×480.
+7.4 s headless episode is 29 MB with one camera at 320×240 and 94 MB with two at
+640×480.
 
 One thing to know before training on them: `scene` is the **operator's** camera,
 so it orbits, zooms and follows the gripper during the episode, and none of that

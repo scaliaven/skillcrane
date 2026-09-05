@@ -254,26 +254,110 @@ else.
 
 ---
 
+## Stage 6 — closing the loop, and what the dataset was hiding
+
+Stage 4 recorded, above, that M7 was "verified end to end": `--headless --record`
+wrote 1680 ticks and 1680 PNGs in full LeRobot layout. Every column present,
+every shape right, every PNG on disk. The dataset was unusable.
+
+`action` was `[0, 0, 0, 0, grip]` on every one of those 1680 ticks. The scripted
+demo moves `game.tgt` directly — which is *correct* for a physics test, it
+isolates the arm from the input layer — so the number recorded beside the motion
+was never the number that caused it. Nothing in 196 tests could see it, because
+every one of them asked whether the file was well-formed, and it was.
+
+The only thing that catches this is replaying the file into the simulator it came
+from. So `policy.py`: a Policy emits the same five stick numbers and goes through
+the same `TeleopEnv.step`, and `ReplayPolicy` feeds a recorded `action` column
+back in.
+
+| check | result |
+|---|---|
+| replay episode into the seed it was collected at | 717 ticks, score 1, **identical**; max state divergence **1.6e-7** over ~700 ticks (float32 column rounding), cube displacement **0.0 m** |
+| same episode replayed into a different seed | **MISS** — so the check above can fail, which is what makes it worth running |
+| all-zero action column (the old dataset's shape) | cube never leaves its spawn |
+
+Two numbers came out of building the scripted policy properly.
+
+**The emitted action must not clip.** Waypoint travel is 0.30 m/s against a
+0.45 m/s full stick, so the peak recorded action is **0.857**. A saturated action
+is one that has stopped describing the motion it produced — the same failure as
+the zeros, just harder to spot.
+
+**Arriving is not stopping, and no position tolerance fixes it.** The commanded
+target is pure integration, so it reaches a waypoint while the arm is still
+crossing the tolerance ball at 0.30 m/s. Measured `|qvel|` at the instant the
+gripper command changed:
+
+```
+arrival rule                    |qvel| at grasp   |qvel| at release
+commanded target within 3 mm         0.770              0.907
+   ... and end effector within 10 mm 0.770              0.907
+   ... and end effector within 6 mm  0.770              0.906
+   ... and |qvel| < 0.05             0.030–0.101        0.023
+```
+
+Tightening the radius changes nothing, because the arm is not slow inside the
+ball — it is passing through it. Settling is a velocity condition or it is
+nothing. Every demonstration before this grasped and released from a moving
+gripper; the fix costs ~15 ticks of a ~700-tick round.
+
+An episode also now records whether it *worked* — `next.reward` per tick,
+`success` and `score` per episode. Without it a directory of rounds cannot be
+filtered into the successful demonstrations the ACT recipe trains on, and a
+round here can score more than once because the cube respawns.
+
+### What the profiler said about `--eval`
+
+Measured on this machine, with the physics in the loop:
+
+| | |
+|---|---|
+| one control tick (5 `mj_step` substeps) | 107 µs |
+| full scripted rollout, seed 0 | 717 ticks / 112 ms |
+| where that goes | `mj_step` **43%**, the whole policy **4%** |
+| `env.frames({"scene": (320, 240)})` | **2366 µs** — 15× the rest of a tick |
+| `--eval 3` vs `--eval 1 --record` | 0.87 s vs 6.2 s |
+
+So the per-tick policy path was not worth optimising (rebuilding a 3-element
+numpy array every tick costs 0.28 ms of a 112 ms episode), and the lever for eval
+throughput is `--record-size` and the view count, not the code.
+
+### One script, not two
+
+The policy walked the same waypoints as `scripted_pick_and_place` — same offsets,
+same tick budgets — and a comment in each file asserted they matched. Nothing
+enforced it, in the module whose reason to exist is that a plausible-looking demo
+can be wrong. `game.WAYPOINTS` is now the single table and both drivers walk it:
+one moving the target, one through the sticks. `game.step_toward` is likewise the
+single implementation of constraint 6.
+
+---
+
 ## Final state
 
 ```
 $ python -m pytest -q
-116 passed, 10 skipped in 8.09s      # core only; benchmark tests skip
-125 passed,  1 skipped               # + robosuite / Meta-World / Fetch
-117 passed,  9 skipped               # inside the LIBERO environment
+230 passed, 17 skipped in 15s        # core only; benchmark tests skip
 ```
+
+The two benchmark-installed worlds last read 125 passed / 1 skipped and 117
+passed / 9 skipped. Neither has been re-measured since Stage 5 — no suite is
+installed on this machine — so treat them as the last numbers observed, not
+current ones.
 
 | milestone | file | tests |
 |---|---|---|
-| M1 scene + kinematics | `test_m1_scene_kin.py` | 12 |
+| M1 scene + kinematics | `test_m1_scene_kin.py` | 15 |
 | M2 stable tracking | `test_m2_tracking.py` | 6 |
 | M3 grasping | `test_m3_grasp.py` | 19 |
 | M4 game rules | `test_m4_rules.py` | 17 |
-| M5 input layer | `test_m5_input.py` | 33 |
-| M6 render + HUD | `test_m6_render.py` | 7 |
-| M7 recording | `test_m7_record.py` | 7 |
-| M8 benchmarks | `test_benchmarks.py` | 11 (+10 skipped) |
-| hard rule | `test_no_pygame.py` | 4 |
+| M5 input layer | `test_m5_input.py` | 54 |
+| M6 render + HUD | `test_m6_render.py` | 25 |
+| M7 recording | `test_m7_record.py` | 23 |
+| M8 benchmarks | `test_benchmarks.py` | 39 (+17 skipped) |
+| M9 policies + replay + eval | `test_m9_policy.py` | 26 |
+| hard rule | `test_no_pygame.py` | 6 |
 
 ## Known limits
 
@@ -283,6 +367,13 @@ $ python -m pytest -q
 - The ~1.4 mm static floor is gravity droop against a position servo. Removing
   it needs gravity compensation, not more gain.
 - `--record` writes one PNG per tick, so a 90 s round is ~9000 files. Fine for
-  collecting demos, but video encoding would be the real answer for volume.
-- M6 is the one layer without meaningful headless coverage. It is kept logic-free
-  so that matters as little as possible.
+  collecting demos, but video encoding would be the real answer for volume. At
+  320x240 that is ~360 MB per camera per 90 s round.
+- Rendering dominates recording, not physics: one 320x240 view costs 2366 µs
+  against a 107 µs control tick, so `--eval --record` is ~7x the wall time of
+  `--eval` alone.
+- `policy.LeRobotPolicy` is written against lerobot's documented interface and
+  has never been run — lerobot is not installed here. Same standing as the
+  RoboCasa adapter.
+- The benchmark-installed test counts above have not been re-measured since the
+  suite/task split.
