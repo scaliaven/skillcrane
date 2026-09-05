@@ -43,6 +43,18 @@ ACTION_NAMES = ["dx", "dy", "dz", "dyaw", "grip"]
 REWARD_COLUMN, DONE_COLUMN = "next.reward", "next.done"
 
 
+# One chunk is 1000 episodes (see info.json), and nothing here has come close,
+# so every episode is still in chunk-000. The layout is spelled out once anyway:
+# the reader in policy.ReplayPolicy has to look where the writer put it, and the
+# day this rolls to chunk-001 a second literal would quietly stop matching.
+CHUNK = "chunk-000"
+
+
+def episode_path(root, episode: int):
+    """Where episode `episode` of the dataset at `root` lives."""
+    return Path(root) / "data" / CHUNK / f"episode_{int(episode):06d}.parquet"
+
+
 def next_episode_index(root) -> int:
     """First unused episode index in `root`.
 
@@ -51,7 +63,7 @@ def next_episode_index(root) -> int:
     dataset. Reads the directory rather than any counter, so it stays right
     across separate runs of the program.
     """
-    data = Path(root) / "data" / "chunk-000"
+    data = episode_path(root, 0).parent
     if not data.is_dir():
         return 0
     used = []
@@ -147,9 +159,9 @@ class EpisodeRecorder:
 
         ep = self.episode_index
         n = len(self.states)
-        data_dir = self.root / "data" / "chunk-000"
+        out = episode_path(self.root, ep)
         meta_dir = self.root / "meta"
-        data_dir.mkdir(parents=True, exist_ok=True)
+        out.parent.mkdir(parents=True, exist_ok=True)
         meta_dir.mkdir(parents=True, exist_ok=True)
 
         img_paths = self._write_frames(ep)
@@ -169,9 +181,7 @@ class EpisodeRecorder:
             DONE_COLUMN: [i == n - 1 for i in range(n)],
         }
         cols.update(img_paths)
-        table = pa.table(cols)
-        out = data_dir / f"episode_{ep:06d}.parquet"
-        pq.write_table(table, out)
+        pq.write_table(pa.table(cols), out)
 
         self._write_meta(ep, n, list(img_paths))
         return out

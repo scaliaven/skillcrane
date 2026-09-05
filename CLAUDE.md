@@ -107,8 +107,11 @@ Two findings behind it:
   so the action beside the motion was not the action that caused it. Every
   column was present, every shape correct, every PNG on disk. `ReplayPolicy` is
   the check -- same seed, same actions, same outcome -- and `main.py --headless`
-  now drives through `ScriptedPickPlace`, which walks the identical waypoints
-  through the sticks. Replay reproduces an episode to 1.6e-7 of state over ~700
+  now drives through `ScriptedPickPlace`. Two drivers is deliberate; two copies
+  of the script was not, so the waypoint table is declared once as
+  `game.WAYPOINTS` and both walk it -- one by moving `game.tgt`, one through the
+  sticks. The rate limit of constraint 6 is likewise one function,
+  `game.step_toward`. Replay reproduces an episode to 1.6e-7 of state over ~700
   ticks; replayed into a *different* seed it misses, which is what stops the
   check from being vacuous, and `test_m9_policy.py` asserts both directions.
 - **Arriving is not stopping.** The commanded target is pure integration, so it
@@ -117,9 +120,10 @@ Two findings behind it:
   legs that end in a gripper action carry `settle=SETTLE_QVEL` (0.05 rad/s) as
   well; without it the fingers closed at |qvel| ~0.7 and opened at ~0.9, so
   every demonstration grasped and released from a moving gripper. Costs ~15
-  ticks of a ~700-tick round. Each waypoint's tick budget is the old script's
-  fixed count, so a leg that never settles falls back to exactly the behaviour
-  the grasp tests were written against.
+  ticks of a ~700-tick round. `settle` is the one field `policy.Waypoint` adds
+  to `game.WAYPOINTS`; the tick budgets stay the old script's fixed counts, so a
+  leg that never settles falls back to exactly the behaviour the grasp tests
+  were written against.
 
 `LeRobotPolicy` is **untested here** -- `lerobot` is not installed on this
 machine -- in the same way RoboCasa is: written against the documented
@@ -281,10 +285,10 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 | M6 | render + HUD | `test_m6_render.py` | 25 passed |
 | M7 | recording (stretch) | `test_m7_record.py` | 23 passed |
 | M8 | benchmark adapters | `test_benchmarks.py` | 39 passed, 17 skipped |
-| M9 | policies + replay + eval | `test_m9_policy.py` | 24 passed |
+| M9 | policies + replay + eval | `test_m9_policy.py` | 26 passed |
 | — | hard rule | `test_no_pygame.py` | 6 passed |
 
-Totals: **228 passed / 17 skipped** with no benchmarks installed. The counts
+Totals: **230 passed / 17 skipped** with no benchmarks installed. The counts
 with the benchmark suites installed have not been re-measured since the
 switching work.
 

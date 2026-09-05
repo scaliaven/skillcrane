@@ -164,7 +164,7 @@ All three views are framed for *control*, which means close:
 |---|---|
 | `scene.py` | MJCF as a string + model constants |
 | `kin.py` | `Arm` (FK/Jacobian/pose error), `IKController`, `down_R` |
-| `game.py` | physics, scoring, spawn logic — **no pygame** |
+| `game.py` | physics, scoring, spawn logic, the demo waypoints — **no pygame** |
 | `input.py` | `GamepadReader`/`KeyboardReader` → `ControlInput` |
 | `render.py` | offscreen render + HUD |
 | `recorder.py` | LeRobot-format episode logging |
@@ -180,11 +180,11 @@ pipeline calls, so it must run where there is no display. See `CLAUDE.md` for th
 ## Tests
 
 ```sh
-python -m pytest -q          # 228 tests, ~15 s, no display and no gamepad needed
+python -m pytest -q          # 230 tests, ~15 s, no display and no gamepad needed
 ```
 
 Benchmark tests skip cleanly when the benchmark isn't installed, so a bare
-checkout stays green (228 passed / 17 skipped).
+checkout stays green (230 passed / 17 skipped).
 
 Physics tests assert on numbers — contact count, joint velocity, tracking error,
 cube height, score — and the grasp tests are parametrised over 12 random spawns,

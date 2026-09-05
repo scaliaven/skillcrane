@@ -21,6 +21,11 @@ from policy import (MAX_TICKS, SETTLE_QVEL, ReplayPolicy, ScriptedPickPlace,
 SEEDS = [0, 1, 2, 3, 4, 5]
 
 
+def score_seeds(seeds, policy=None):
+    """Run a policy over `seeds`, a clean world each. The scripted one by default."""
+    return evaluate(lambda s: Game(seed=s), policy or ScriptedPickPlace(), seeds)
+
+
 def collect(seed=0, policy=None):
     """One scripted round. Returns the game, the rollout, actions and states."""
     g = Game(seed=seed)
@@ -35,7 +40,7 @@ def collect(seed=0, policy=None):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_the_scripted_policy_scores(seed):
-    """Same waypoints as game.scripted_pick_and_place, driven through the sticks.
+    """The same game.WAYPOINTS table, driven through the sticks.
 
     Parametrised because one lucky spawn is not a pass -- the same rule the
     grasp milestone is held to.
@@ -185,24 +190,34 @@ def test_rollout_reports_when_it_scored():
 
 
 def test_evaluate_runs_one_clean_world_per_seed():
-    """Each seed gets a fresh env, so the numbers are per seed and comparable."""
+    """Each seed gets a fresh env, so the numbers are per seed and comparable.
+
+    A shared env would carry the previous round's score, clock and cube into the
+    next, and every seed after the first would report the running total.
+    """
     seeds = [0, 1, 2]
-    results = evaluate(lambda s: Game(seed=s), ScriptedPickPlace, seeds)
+    results = score_seeds(seeds)
     assert [r.seed for r in results] == seeds
     assert all(r.score == 1 for r in results), summarise(results)
     assert success_rate(results) == 1.0
-    # A shared env would carry the previous round's score into the next one.
-    assert {r.score for r in results} == {1}
+
+
+def test_one_policy_instance_serves_every_seed():
+    """evaluate takes an instance, not a factory: rollout rewinds it via reset."""
+    pol = ScriptedPickPlace()
+    results = score_seeds([1, 2], policy=pol)
+    assert all(r.score == 1 for r in results), summarise(results)
+    assert pol.completed == 1, "the policy carried its tally across episodes"
 
 
 def test_evaluate_is_reproducible():
-    a = evaluate(lambda s: Game(seed=s), ScriptedPickPlace, [1, 2])
-    b = evaluate(lambda s: Game(seed=s), ScriptedPickPlace, [1, 2])
+    a = score_seeds([1, 2])
+    b = score_seeds([1, 2])
     assert [(r.ticks, r.score) for r in a] == [(r.ticks, r.score) for r in b]
 
 
 def test_summarise_names_every_seed_and_the_rate():
-    results = evaluate(lambda s: Game(seed=s), ScriptedPickPlace, [0, 1])
+    results = score_seeds([0, 1])
     text = summarise(results)
     assert "success 2/2 = 100%" in text
     assert text.count("ok") == 2
@@ -216,10 +231,10 @@ def test_summarise_survives_an_empty_run():
 
 # --- the --policy spec -------------------------------------------------------
 
-def test_policy_spec_picks_the_right_kind(tmp_path):
+def test_policy_spec_picks_the_right_kind():
     from main import _make_policy
 
-    assert isinstance(_make_policy("scripted")(), ScriptedPickPlace)
+    assert isinstance(_make_policy("scripted"), ScriptedPickPlace)
     with pytest.raises(SystemExit):
         _make_policy("nonsense")
     with pytest.raises(SystemExit):
@@ -238,8 +253,8 @@ def test_policy_spec_reads_the_episode_number(tmp_path):
             rec.add(np.zeros(10), [0.1, 0, 0, 0, 0], reward=0.0)
         rec.save()
 
-    assert len(_make_policy(f"replay:{tmp_path}")()) == 11
-    assert len(_make_policy(f"replay:{tmp_path}:3")()) == 17
+    assert len(_make_policy(f"replay:{tmp_path}")) == 11
+    assert len(_make_policy(f"replay:{tmp_path}:3")) == 17
 
 
 def test_the_scripted_policy_says_it_is_native_only():
@@ -260,3 +275,16 @@ def test_eval_refuses_the_scripted_policy_on_another_suite():
 
     with pytest.raises(SystemExit, match="native-only"):
         run_eval(1, env_spec="robosuite:Lift")
+
+
+def test_eval_accepts_the_native_suite_with_its_task_named():
+    """"native:default" is a spec the registry itself produces.
+
+    The guard asks benchmarks.parse for the suite. Comparing the whole spec
+    against the literal "native" rejected the registry's own round trip.
+    """
+    import benchmarks
+    from main import run_eval
+
+    assert benchmarks.parse("native:default")[0] == "native"
+    assert run_eval(1, seed=0, env_spec="native:default") == 0

@@ -17,6 +17,12 @@ from kin import Arm, IKController, down_R
 class Game:
     """Arm + cube + scoring, advanced one control tick at a time."""
 
+    #: Simulated seconds per step(), the same member TeleopEnv declares. Here so
+    #: that policy.py can drive a bare Game and an adapted env through one path
+    #: rather than substituting a default for whatever is missing -- a silent
+    #: default is how a 20 Hz benchmark ends up being stepped at 100 Hz.
+    control_dt = scene.CTRL_DT
+
     def __init__(self, seed: int = 0):
         self.m = mujoco.MjModel.from_xml_string(scene.XML)
         self.d = mujoco.MjData(self.m)
@@ -112,6 +118,9 @@ class Game:
             self.tgt[:2] *= np.clip(r, scene.REACH_MIN, scene.REACH_MAX) / r
         self.tgt[2] = float(np.clip(self.tgt[2], scene.Z_MIN, scene.Z_MAX))
 
+    def close(self) -> None:
+        """Nothing to release. Here so a Game closes like a TeleopEnv does."""
+
     # -- rules ---------------------------------------------------------------
     def check_score(self) -> bool:
         """Score when the cube is settled, inside the zone, and released."""
@@ -128,7 +137,25 @@ class Game:
         return False
 
 
-def drive_to(game: Game, goal, closed: bool, ticks: int, speed: float = 0.30,
+SCRIPT_SPEED = 0.30       # m/s the scripted demo travels its waypoints at
+
+
+def step_toward(cur, goal, speed: float, dt: float) -> np.ndarray:
+    """Rate-limited displacement from `cur` toward `goal` for one tick.
+
+    Constraint 6 in one place: at most `speed * dt`, and never past the goal.
+    `drive_to` adds this to the Cartesian target; policy.py divides it by what a
+    full stick is worth and sends it through Game.step instead. Two drivers, one
+    rule -- the rule is what must not drift.
+    """
+    d = np.asarray(goal, dtype=float) - np.asarray(cur, dtype=float)
+    n = float(np.linalg.norm(d))
+    if n <= 1e-9:
+        return np.zeros(3)
+    return d / n * min(speed * dt, n)
+
+
+def drive_to(game: Game, goal, closed: bool, ticks: int, speed: float = SCRIPT_SPEED,
              on_tick=None) -> bool:
     """Scripted rate-limited move of the Cartesian target toward `goal`.
 
@@ -137,12 +164,10 @@ def drive_to(game: Game, goal, closed: bool, ticks: int, speed: float = 0.30,
     honouring the same no-jump rule as Game.step.
     """
     scored = False
-    goal = np.asarray(goal, dtype=float)
     for _ in range(ticks):
-        delta = goal - game.tgt
-        nrm = float(np.linalg.norm(delta))
-        if nrm > 1e-9:
-            game.tgt += delta / nrm * min(speed * scene.CTRL_DT, nrm)
+        d = step_toward(game.tgt, goal, speed, scene.CTRL_DT)
+        if d.any():
+            game.tgt += d
             game.clamp_target()
         scored |= bool(game.step(0, 0, 0, 0, closed))
         if on_tick is not None:
@@ -150,30 +175,53 @@ def drive_to(game: Game, goal, closed: bool, ticks: int, speed: float = 0.30,
     return scored
 
 
-def scripted_grasp(game: Game, lift_to=(0.30, 0.0, 0.32), on_tick=None) -> None:
+# The demonstration script, declared once: (name, goal, gripper closed, ticks).
+# `goal` is None for "hold still and wait" -- the two legs where the fingers are
+# moving and the arm must not be.
+#
+# It lives here and not in policy.py because both drivers need it and this is the
+# one they may both import: policy.py walks this table through the sticks (which
+# is what makes a recorded action explain the recorded motion) while the
+# functions below walk it by moving game.tgt directly (which is what isolates the
+# arm from the input layer for the physics tests). Two drivers is deliberate; two
+# copies of the script was not, and nothing would have caught them drifting.
+WAYPOINTS = (
+    ("above",   lambda g: g.cube_pos() + [0, 0, 0.13],   False, 250),
+    ("descend", lambda g: g.cube_pos() + [0, 0, 0.012],  False, 250),
+    ("close",   None,                                    True,   80),
+    ("lift",    lambda g: np.array([0.30, 0.0, 0.32]),   True,  250),
+    ("carry",   lambda g: np.array([*g.target, 0.30]),   True,  400),
+    ("lower",   lambda g: np.array([*g.target, 0.09]),   True,  250),
+    ("release", None,                                    False, 200),
+)
+#: Through the lift: the grasp milestone is asserted before any carrying.
+GRASP_LEGS = 4
+
+
+def _walk(game: Game, legs, on_tick=None, speed: float = SCRIPT_SPEED) -> bool:
+    """Run a slice of WAYPOINTS by driving the Cartesian target. True if scored."""
+    scored = False
+    for _name, where, closed, budget in legs:
+        if where is None:
+            for _ in range(budget):
+                scored |= bool(game.step(0, 0, 0, 0, closed))
+                if on_tick is not None:
+                    on_tick(game)
+        else:
+            scored |= drive_to(game, where(game), closed, budget, speed=speed,
+                               on_tick=on_tick)
+    return scored
+
+
+def scripted_grasp(game: Game, on_tick=None) -> None:
     """Approach above the cube -> descend onto it -> close -> lift.
 
     Split out from the full cycle so the grasp milestone can be asserted on its
     own, before any carrying happens.
     """
-    c = game.cube_pos()
-    drive_to(game, c + [0, 0, 0.13], False, 250, on_tick=on_tick)   # above it
-    drive_to(game, c + [0, 0, 0.012], False, 250, on_tick=on_tick)  # down around it
-    for _ in range(80):                       # hold still while the fingers close
-        game.step(0, 0, 0, 0, True)
-        if on_tick is not None:
-            on_tick(game)
-    drive_to(game, lift_to, True, 250, on_tick=on_tick)
+    _walk(game, WAYPOINTS[:GRASP_LEGS], on_tick=on_tick)
 
 
 def scripted_pick_and_place(game: Game, on_tick=None) -> bool:
     """Full grasp -> carry to the drop zone -> release cycle. True if it scored."""
-    scripted_grasp(game, on_tick=on_tick)
-    drive_to(game, [*game.target, 0.30], True, 400, on_tick=on_tick)
-    drive_to(game, [*game.target, 0.09], True, 250, on_tick=on_tick)
-    scored = False
-    for _ in range(200):                      # release and let it settle
-        scored |= bool(game.step(0, 0, 0, 0, False))
-        if on_tick is not None:
-            on_tick(game)
-    return scored
+    return _walk(game, WAYPOINTS, on_tick=on_tick)

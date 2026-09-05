@@ -127,10 +127,10 @@ def run_headless(seed: int = 2, record=None, env_spec: str = "native",
         print("recording views:", ", ".join(sizes) or "(none)",
               f"at {record_size[0]}x{record_size[1]}")
 
-    # The policy, not game.scripted_pick_and_place, even though they walk the
-    # same waypoints: the script moves the Cartesian target directly, so a round
-    # recorded from it logged [0, 0, 0, 0, grip] on every tick while the arm
-    # crossed the table. The dataset was unlearnable and looked fine.
+    # The policy, not game.scripted_pick_and_place. Both walk game.WAYPOINTS;
+    # the difference is that the script moves the Cartesian target directly, so a
+    # round recorded from it logged [0, 0, 0, 0, grip] on every tick while the
+    # arm crossed the table. The dataset was unlearnable and looked fine.
     pol = ScriptedPickPlace()
     reported = set()
 
@@ -177,11 +177,9 @@ def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60,
     rec = _new_recorder(record, env) if record is not None else None
     sizes = _record_sizes(env, record_views, record_size) if rec is not None else {}
 
-    scored = 0
     for i in range(ticks):
         action = (0.0, 0.0, -0.4, 0.0, i > ticks // 2)     # descend, then close
         hit = bool(env.step(*action, env.control_dt))
-        scored += hit
         if rec is not None:
             rec.add(env.observation(),
                     [*action[:4], float(action[4])], env.frames(sizes),
@@ -195,17 +193,17 @@ def _headless_benchmark(env_spec: str, seed: int, record=None, ticks: int = 60,
 
 
 def _make_policy(spec: str, size=RECORD_SIZE):
-    """Turn a --policy string into something that hands back a Policy.
+    """Turn a --policy string into a Policy.
 
-    Same shape as --env: a kind, a colon, and what the kind needs. Returns a
-    factory rather than an instance because --eval builds one per seed, and a
-    replayed or learned policy is expensive to construct but cheap to rewind.
+    Same shape as --env: a kind, a colon, and what the kind needs. One instance
+    serves every seed -- `rollout` rewinds it through `reset` -- so a replayed
+    episode is read once here and a checkpoint is loaded once.
     """
     import policy as pol
 
     kind, _, rest = str(spec).partition(":")
     if kind == "scripted":
-        return lambda: pol.ScriptedPickPlace()
+        return pol.ScriptedPickPlace()
     if kind == "replay":
         root, ep = rest, 0
         head, sep, tail = rest.rpartition(":")
@@ -218,12 +216,11 @@ def _make_policy(spec: str, size=RECORD_SIZE):
             raise SystemExit("--policy replay:DIR wants the dataset directory")
         loaded = pol.ReplayPolicy.from_dataset(root, ep)
         print(f"replaying episode {ep} of {root}: {len(loaded)} ticks")
-        return lambda: loaded          # reset() rewinds it; no need to reload
+        return loaded
     if kind in ("act", "lerobot"):
         if not rest:
             raise SystemExit("--policy act:PATH wants a checkpoint directory")
-        loaded = pol.LeRobotPolicy(rest, size=size)
-        return lambda: loaded
+        return pol.LeRobotPolicy(rest, size=size)
     raise SystemExit(f"unknown --policy {spec!r}; want scripted, "
                      f"replay:DIR[:EP] or act:PATH")
 
@@ -242,42 +239,46 @@ def run_eval(episodes: int, seed=None, policy_spec: str = DEFAULT_POLICY,
     import benchmarks
     from policy import evaluate, summarise
 
-    if policy_spec == DEFAULT_POLICY and env_spec != "native":
-        # Caught here so the message arrives before an env is built, rather than
-        # as a TypeError out of the first waypoint.
+    the_policy = _make_policy(policy_spec, record_size)
+    suite = benchmarks.parse(env_spec)[0]
+    # Asked of the policy and the registry rather than compared against the
+    # string "native": `--env native:default` is a spec the registry itself
+    # produces, and a literal here rejects it.
+    if the_policy.suites and suite not in the_policy.suites:
+        # Caught before an env is built, rather than as a TypeError out of the
+        # first waypoint several hundred ticks in.
         raise SystemExit(
-            f"--policy scripted is native-only; {env_spec} has no cube of ours. "
-            f"Use --policy replay:DIR or act:PATH, or --env native")
+            f"--policy {policy_spec} is {'/'.join(the_policy.suites)}-only; "
+            f"{suite} has no cube of ours. Use --policy replay:DIR or act:PATH")
     seed = 0 if seed is None else seed
     seeds = list(range(seed, seed + max(1, int(episodes))))
-    make_policy = _make_policy(policy_spec, record_size)
     print(f"eval       {env_spec}  policy {policy_spec}  seeds {seeds[0]}..{seeds[-1]}")
 
     # One episode per seed, so the recorder is opened and closed around each
     # rollout rather than spanning the whole run: a dataset wants an episode
     # boundary wherever the world was rebuilt.
-    live = {"rec": None, "sizes": {}}
+    rec, sizes = None, {}
 
     def on_start(s, env):
+        nonlocal rec, sizes
         if record is None:
             return
-        live["rec"] = _new_recorder(record, env)
-        live["sizes"] = _record_sizes(env, record_views, record_size)
+        rec = _new_recorder(record, env)
+        sizes = _record_sizes(env, record_views, record_size)
 
     def on_tick(env, action, scored):
-        rec = live["rec"]
         if rec is not None:
-            rec.add(env.observation(), action, env.frames(live["sizes"]),
+            rec.add(env.observation(), action, env.frames(sizes),
                     reward=float(scored))
 
     def on_episode(r):
-        rec = live["rec"]
+        nonlocal rec
         if rec is not None and len(rec):
             print(f"  seed {r.seed}: {len(rec)} ticks -> {rec.save()} "
                   f"(success={rec.success()})")
-        live["rec"] = None
+        rec = None
 
-    results = evaluate(lambda s: benchmarks.make(env_spec, seed=s), make_policy,
+    results = evaluate(lambda s: benchmarks.make(env_spec, seed=s), the_policy,
                        seeds, on_start=on_start, on_tick=on_tick,
                        on_episode=on_episode)
     print(summarise(results))
@@ -353,7 +354,8 @@ def _switch(s: Session, new_spec: str, seed, record, views, nothing: str,
         return s
 
     if s.rec is not None and len(s.rec):
-        print(f"recorded {len(s.rec)} ticks -> {s.rec.save()}")
+        print(f"recorded {len(s.rec)} ticks -> {s.rec.save()} "
+              f"(success={s.rec.success()})")
     s.env.close()
     suite, task = benchmarks.parse(new_spec)
     say(f"{what} -> {new_spec}   suite {suite}  task {task or '(default)'}   "
@@ -516,7 +518,8 @@ def run_game(seed=None, record=None, env_spec: str = "native",
         display.tick(60)
 
     if s.rec is not None and len(s.rec):
-        print(f"recorded {len(s.rec)} ticks -> {s.rec.save()}")
+        print(f"recorded {len(s.rec)} ticks -> {s.rec.save()} "
+              f"(success={s.rec.success()})")
     s.env.close()
     display.close()
     return 0

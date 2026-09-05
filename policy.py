@@ -1,10 +1,10 @@
 """Policies that drive a TeleopEnv -- scripted, replayed, or learned.
 
 recorder.py is one end of the data pipe; this is the other. A policy produces
-exactly what the sticks produce -- `(dx, dy, dz, dyaw, grip)`, each in
-[-1, 1] -- and it goes through the same `TeleopEnv.step`, so a scripted
-demonstration, a replayed episode and a trained network are all comparable, all
-recordable, and all scored by the same rules.
+exactly what the sticks produce -- `(dx, dy, dz, dyaw, grip)`, each in [-1, 1] --
+and it goes through the same `TeleopEnv.step`, so a scripted demonstration, a
+replayed episode and a trained network are all comparable, all recordable, and
+all scored by the same rules.
 
 HARD RULE, same as game.py: no pygame, no display. This has to run wherever the
 sim runs, because it is what a data pipeline calls.
@@ -24,26 +24,21 @@ from dataclasses import dataclass
 import numpy as np
 
 import scene
+from game import SCRIPT_SPEED, WAYPOINTS, step_toward
 
 # Arrival is measured on the *commanded* target, not the measured end effector.
 # The target is pure integration, so it always converges and the phase machine
 # can never stall waiting on an arm that is fighting contact. 3 mm is well
 # inside the tolerance the waypoints themselves are chosen at.
 REACH_TOL = 0.003
-# Waypoint travel speed. Deliberately under MOVE_SPEED (0.45) and LIFT_SPEED
-# (0.35) so the emitted stick never saturates: a clipped action is one that no
-# longer describes the motion it produced, which is the exact defect this module
-# exists to catch.
-SCRIPT_SPEED = 0.30
-# "Arrived" on the commanded target is not "stopped": the target is pure
-# integration and gets there first, with the arm still crossing the tolerance
-# ball at 0.3 m/s. Legs that end in a gripper action wait for the joints as well,
-# or the fingers close on a moving cube and open on a moving one. 0.05 rad/s is
-# the same order as the cube-settled test in Game.check_score, and costs ~15
-# ticks of a ~700-tick round.
+# "Arrived" is not "stopped": the target gets to a waypoint first, with the arm
+# still crossing the tolerance ball at SCRIPT_SPEED, so no position tolerance can
+# express settling at any radius. The two legs that end in a gripper action wait
+# for the joints as well. 0.05 rad/s is the same order as the cube-settled test
+# in Game.check_score, and costs ~15 ticks of a ~700-tick round.
 SETTLE_QVEL = 0.05
-# One pick-and-place is ~1430 ticks of the script below. The cap is a backstop
-# against a policy that never finishes, not a budget anyone should hit.
+# One pick-and-place is ~750 ticks. The cap is a backstop against a policy that
+# never finishes, not a budget anyone should hit.
 MAX_TICKS = 2500
 
 
@@ -57,10 +52,6 @@ def _game(env):
     return getattr(env, "game", env)
 
 
-def _dt(env) -> float:
-    return float(getattr(env, "control_dt", scene.CTRL_DT))
-
-
 class Policy(ABC):
     """Something that produces one action per control tick.
 
@@ -68,9 +59,14 @@ class Policy(ABC):
     world, a learned one needs to ask for camera frames at its own size, and
     both are cheaper to write than a lowest-common-denominator observation dict
     that neither wants. Everything they *emit* is the same five numbers.
+
+    One instance is reused across episodes; `reset` is what rewinds it.
     """
 
     name = "policy"
+    #: Suites this policy can drive, or None for any. Only the scripted one is
+    #: restricted, and it says so itself rather than having callers test for it.
+    suites = None
 
     def reset(self, env) -> None:
         """Start a fresh episode. The env is already reset by the caller."""
@@ -88,68 +84,66 @@ class Policy(ABC):
 
 @dataclass(frozen=True)
 class Waypoint:
-    """One leg of the script. `where` is None for 'hold still and wait'."""
+    """One leg of game.WAYPOINTS plus the one thing only a policy needs."""
     name: str
-    where: object           # callable(game) -> xyz, latched on entry
+    where: object           # callable(game) -> xyz, latched on entry; None = hold
     closed: bool
-    budget: int             # ticks: the whole phase if holding, else a backstop
+    budget: int             # ticks: the whole leg if holding, else a backstop
     settle: float = 0.0     # also wait for |qvel| under this before advancing
 
 
-# The same waypoints and the same tick budgets as game.scripted_pick_and_place,
-# because that one is the version 19 grasp tests have already vouched for. The
-# only difference is that this one goes through the sticks.
-# The budgets double as the old script's fixed tick counts, so a leg that never
-# settles falls back to exactly the behaviour the grasp tests were written
-# against rather than to something new.
-SCRIPT = (
-    Waypoint("above",   lambda g: g.cube_pos() + [0, 0, 0.13],  False, 250),
-    Waypoint("descend", lambda g: g.cube_pos() + [0, 0, 0.012], False, 250,
-             settle=SETTLE_QVEL),                       # then the fingers close
-    Waypoint("close",   None,                                   True,   80),
-    Waypoint("lift",    lambda g: np.array([0.30, 0.0, 0.32]),  True,  250),
-    Waypoint("carry",   lambda g: np.array([*g.target, 0.30]),  True,  400),
-    Waypoint("lower",   lambda g: np.array([*g.target, 0.09]),  True,  250,
-             settle=SETTLE_QVEL),                       # then the fingers open
-    Waypoint("release", None,                                   False, 200),
-)
+# game.py owns the script; this adds the settle condition to the two legs that
+# end with the fingers moving. The budgets stay the old fixed tick counts, so a
+# leg that never settles falls back to exactly the behaviour the grasp tests
+# were written against.
+SETTLE_LEGS = {"descend": SETTLE_QVEL, "lower": SETTLE_QVEL}
+SCRIPT = tuple(Waypoint(name, where, closed, budget, SETTLE_LEGS.get(name, 0.0))
+               for name, where, closed, budget in WAYPOINTS)
 
 
 class ScriptedPickPlace(Policy):
     """Approach -> grasp -> carry -> release, emitted as stick values.
 
-    `game.scripted_pick_and_place` drives `game.tgt` directly. That is right
-    for a physics test -- it isolates the arm from the input layer -- and wrong
-    for a *demonstration*, because the action recorded next to the motion is
-    then not the action that caused it. This walks the identical waypoints and
-    converts each one into the stick deflection that moves the target there,
+    `game.scripted_pick_and_place` walks the same `game.WAYPOINTS` by driving
+    `game.tgt` directly. That is right for a physics test -- it isolates the arm
+    from the input layer -- and wrong for a *demonstration*, because the action
+    recorded next to the motion is then not the action that caused it. This
+    converts each leg into the stick deflection that moves the target there,
     which is what an operator's thumb would have had to do.
 
     Native-only, on purpose: it reads the cube position and the drop zone.
     """
 
     name = "scripted"
+    suites = ("native",)
 
     def __init__(self, speed: float = SCRIPT_SPEED, cycles: int = 1, script=SCRIPT):
         self.speed = float(speed)
         self.cycles = int(cycles)       # rounds to play before done(); 0 = forever
         self.script = tuple(script)
-        self.reset(None)
+        self._rewind()
+
+    def _rewind(self) -> None:
+        self._i = 0
+        self._ticks = 0
+        self._goal = None
+        self.completed = 0
+
+    @property
+    def phase(self) -> str:
+        """Which leg is running. Derived, so it cannot drift from `_i`."""
+        return self.script[self._i].name
 
     def reset(self, env) -> None:
         # Checked here rather than left to fail deep in a waypoint lambda: on a
         # benchmark suite the first symptom would be AttributeError: cube_pos,
         # several hundred ticks into what looked like a working eval.
-        if env is not None and not hasattr(_game(env), "cube_pos"):
+        if not hasattr(_game(env), "cube_pos"):
             raise TypeError(
                 "the scripted policy is native-only -- it reads the cube and the "
                 "drop zone, which no benchmark suite exposes. Use "
                 "--policy replay:DIR or act:PATH on other suites.")
-        self.phase = self.script[0].name
-        self._i = 0
-        self._ticks = 0
-        self._goal = None
-        self.completed = 0
+        self._rewind()
 
     def done(self) -> bool:
         return bool(self.cycles) and self.completed >= self.cycles
@@ -162,49 +156,43 @@ class ScriptedPickPlace(Policy):
         if self._goal is None and wp.where is not None:
             self._goal = np.asarray(wp.where(g), dtype=float)
 
-        action = self._stick(env, g, self._goal, wp.closed)
+        action = self._stick(env, g, wp.closed)
         self._ticks += 1
         if self._arrived(g, wp):
             self._advance()
         return action
 
-    def _stick(self, env, g, goal, closed) -> tuple:
-        """The stick that moves the commanded target toward `goal` this tick.
+    def _stick(self, env, g, closed) -> tuple:
+        """The stick that moves the commanded target toward the goal this tick.
 
-        Mirrors game.drive_to exactly -- travel at most `speed * dt`, and never
-        past the goal -- then divides by what a full stick is worth on each axis.
-        The axes have different speeds (MOVE_SPEED horizontally, LIFT_SPEED
-        vertically), so the division is per axis, not one scale factor.
+        `game.step_toward` decides how far to travel -- the same rate limit
+        `drive_to` obeys -- and this divides it by what a full stick is worth on
+        each axis. The axes have different speeds (MOVE_SPEED horizontally,
+        LIFT_SPEED vertically), so the division is per axis, not one factor.
         """
-        if goal is None:
+        if self._goal is None:
             return (0.0, 0.0, 0.0, 0.0, bool(closed))
-        dt = _dt(env)
-        d = goal - g.tgt
-        n = float(np.linalg.norm(d))
-        if n > 1e-9:
-            d = d / n * min(self.speed * dt, n)
-        else:
-            d = np.zeros(3)
+        dt = env.control_dt
+        d = step_toward(g.tgt, self._goal, self.speed, dt)
         full = np.array([scene.MOVE_SPEED * dt, scene.MOVE_SPEED * dt,
                          scene.LIFT_SPEED * dt])
         dx, dy, dz = np.clip(d / full, -1.0, 1.0)
         return (float(dx), float(dy), float(dz), 0.0, bool(closed))
 
     def _arrived(self, g, wp) -> bool:
-        if wp.where is None:                    # a hold: the budget *is* the leg
-            return self._ticks >= wp.budget
-        there = float(np.linalg.norm(self._goal - g.tgt)) < REACH_TOL
+        # A hold has no goal, so its budget *is* the leg. Otherwise the budget is
+        # the backstop: the target is clamped to the reachable shell, so a goal
+        # outside it is never reached however long we wait.
+        there = (self._goal is not None
+                 and float(np.linalg.norm(self._goal - g.tgt)) < REACH_TOL)
         if there and wp.settle:
             there = float(np.linalg.norm(g.d.qvel[g.arm.dof])) < wp.settle
-        # The target is clamped to the reachable shell, so a goal outside it is
-        # never reached however long we wait -- hence the budget as well.
         return there or self._ticks >= wp.budget
 
     def _advance(self) -> None:
         self._i = (self._i + 1) % len(self.script)
         self._ticks = 0
         self._goal = None
-        self.phase = self.script[self._i].name
         if self._i == 0:                        # wrapped: one full round done
             self.completed += 1
 
@@ -232,12 +220,14 @@ class ReplayPolicy(Policy):
     def from_dataset(cls, root, episode: int = 0, **kw) -> "ReplayPolicy":
         """Load one episode's actions from a LeRobot directory written here."""
         import pyarrow.parquet as pq          # optional dep, same as recorder.py
-        from pathlib import Path
 
-        path = Path(root) / "data" / "chunk-000" / f"episode_{int(episode):06d}.parquet"
+        from recorder import episode_path     # the writer owns the layout
+
+        path = episode_path(root, episode)
         if not path.exists():
             raise FileNotFoundError(f"no episode {episode} in {root} ({path})")
-        return cls(pq.read_table(path).column("action").to_pylist(), **kw)
+        return cls(pq.read_table(path, columns=["action"]).column("action").to_pylist(),
+                   **kw)
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -327,7 +317,7 @@ class Rollout:
     seed: int
     ticks: int
     score: int                      # times the round scored
-    seconds: float                  # simulated, not wall clock
+    dt: float                       # the env's control period
     first_score_tick: int = None    # None if it never scored
 
     @property
@@ -335,9 +325,15 @@ class Rollout:
         return self.score > 0
 
     @property
+    def seconds(self) -> float:
+        """Simulated, not wall clock."""
+        return self.ticks * self.dt
+
+    @property
     def time_to_score(self):
-        dt = self.seconds / self.ticks if self.ticks else 0.0
-        return None if self.first_score_tick is None else self.first_score_tick * dt
+        if self.first_score_tick is None:
+            return None
+        return self.first_score_tick * self.dt
 
 
 def rollout(env, policy, max_ticks: int = MAX_TICKS, on_tick=None,
@@ -348,7 +344,7 @@ def rollout(env, policy, max_ticks: int = MAX_TICKS, on_tick=None,
     recorder hangs, so a rollout and a played round log identically.
     """
     policy.reset(env)
-    dt = _dt(env)
+    dt = env.control_dt
     ticks = score = 0
     first = None
     while ticks < max_ticks and not policy.done():
@@ -361,22 +357,21 @@ def rollout(env, policy, max_ticks: int = MAX_TICKS, on_tick=None,
                 first = ticks
         if on_tick is not None:
             on_tick(env, a, scored)
-    return Rollout(seed=seed, ticks=ticks, score=score, seconds=ticks * dt,
-                   first_score_tick=first)
+    return Rollout(seed=seed, ticks=ticks, score=score, dt=dt, first_score_tick=first)
 
 
-def evaluate(make_env, make_policy, seeds, max_ticks: int = MAX_TICKS,
+def evaluate(make_env, policy, seeds, max_ticks: int = MAX_TICKS,
              on_start=None, on_episode=None, on_tick=None) -> list:
     """One rollout per seed, on a freshly built env each time.
 
-    Factories rather than instances because the whole point is that each seed
-    gets a clean world -- reusing one env would carry the previous round's
-    score, clock and cube into the next and make the numbers meaningless.
+    `make_env` is a factory because the whole point is that each seed gets a
+    clean world -- reusing one env would carry the previous round's score, clock
+    and cube into the next and make the numbers meaningless. `policy` is a single
+    instance because `rollout` rewinds it through `reset` anyway.
 
     `on_start(seed, env)` fires before each episode and `on_episode(rollout)`
     after it, which is where recording hangs: one episode per seed, opened and
-    closed here rather than in a loop main.py would otherwise have to keep in
-    step with this one.
+    closed here rather than in a loop main.py would have to keep in step.
     """
     out = []
     for seed in seeds:
@@ -384,15 +379,9 @@ def evaluate(make_env, make_policy, seeds, max_ticks: int = MAX_TICKS,
         try:
             if on_start is not None:
                 on_start(seed, env)
-            r = rollout(env, make_policy(), max_ticks=max_ticks, seed=seed,
-                        on_tick=on_tick)
+            r = rollout(env, policy, max_ticks=max_ticks, seed=seed, on_tick=on_tick)
         finally:
-            # A TeleopEnv owns renderers and has to be closed; a bare Game does
-            # not have the method at all, and the rest of this module accepts
-            # either -- so ask rather than assume.
-            close = getattr(env, "close", None)
-            if callable(close):
-                close()
+            env.close()
         out.append(r)
         if on_episode is not None:
             on_episode(r)
