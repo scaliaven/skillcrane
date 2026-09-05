@@ -381,6 +381,14 @@ including the Ultimate 2C, use a switch on the back instead.
   the disclosure, and it is per line, because a paragraph-level one let a single
   disclaimer cover a whole table and the live row in it went unchecked.
 
+## Where things are written down
+
+- `open.md` — known-undone work, and a **Decided against** list with the
+  measurement behind each refusal. Add to it rather than leaving a TODO in the
+  code; an item leaves only when it is done or moved to the second list.
+- `DEVLOG.md` — the history, and which numbers forced which decisions.
+- `BENCHMARKS.md` — per-suite install landmines and the measured gripper signs.
+
 ## Style
 
 Small modules, plain functions, no framework. Comment *why* for anything

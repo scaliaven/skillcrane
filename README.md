@@ -462,3 +462,7 @@ also picks up the new environment's cameras.
 **superseded** by the modules above: its actuator tuning predates the tracking
 work (constraints 7–9 in `CLAUDE.md`), and it predates the rename, so it still
 says "Claw Crew" inside. Read the modules, not it.
+
+`open.md` is what is known to be undone — and, in a second list, what was
+deliberately *not* done and why, so those do not get re-argued. `DEVLOG.md` is
+the other half: which measured numbers forced which decisions, stage by stage.
