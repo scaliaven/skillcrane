@@ -226,7 +226,7 @@ python main.py --env robosuite:Lift --record runs/lift
 
 | environment | result |
 |---|---|
-| core only (no benchmarks) | 230 passed, 17 skipped |
+| core only (no benchmarks) | 242 passed, 17 skipped |
 | + robosuite / Meta-World / Fetch | 125 passed, 1 skipped † |
 | LIBERO env | 117 passed, 9 skipped † |
 

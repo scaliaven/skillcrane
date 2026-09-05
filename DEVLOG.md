@@ -338,13 +338,15 @@ single implementation of constraint 6.
 
 ```
 $ python -m pytest -q
-230 passed, 17 skipped in 15s        # core only; benchmark tests skip
+242 passed, 17 skipped in 16s        # core only; benchmark tests skip
 ```
 
-The two benchmark-installed worlds last read 125 passed / 1 skipped and 117
-passed / 9 skipped. Neither has been re-measured since Stage 5 — no suite is
-installed on this machine — so treat them as the last numbers observed, not
-current ones.
+Neither benchmark-installed world has been re-measured since Stage 5 — no suite
+is installed on this machine — so these are the last numbers observed, not
+current ones:
+
+- 125 passed, 1 skipped † with robosuite / Meta-World / Fetch
+- 117 passed, 9 skipped † inside the LIBERO env
 
 | milestone | file | tests |
 |---|---|---|
@@ -358,6 +360,7 @@ current ones.
 | M8 benchmarks | `test_benchmarks.py` | 39 (+17 skipped) |
 | M9 policies + replay + eval | `test_m9_policy.py` | 26 |
 | hard rule | `test_no_pygame.py` | 6 |
+| docs match the suite | `test_docs.py` | 12 |
 
 ## Known limits
 

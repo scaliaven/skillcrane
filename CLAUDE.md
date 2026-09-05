@@ -287,8 +287,9 @@ Settled findings. They look arbitrary and will be "cleaned up" otherwise.
 | M8 | benchmark adapters | `test_benchmarks.py` | 39 passed, 17 skipped |
 | M9 | policies + replay + eval | `test_m9_policy.py` | 26 passed |
 | — | hard rule | `test_no_pygame.py` | 6 passed |
+| — | docs match the suite | `test_docs.py` | 12 passed |
 
-Totals: **230 passed / 17 skipped** with no benchmarks installed. The counts
+Totals: **242 passed / 17 skipped** with no benchmarks installed. The counts
 with the benchmark suites installed have not been re-measured since the
 switching work.
 
@@ -353,6 +354,24 @@ including the Ultimate 2C, use a switch on the back instead.
 - Grasp tests are parametrised over random seeds. A single lucky seed is not a
   pass.
 - Do not mark a milestone done without running its test and showing the output.
+- **The docs are tested too.** Six files quote test counts -- README, this file,
+  DEVLOG, BENCHMARKS, `environment.yml` and the project page -- and all six had
+  drifted, one by four commits and 114 tests, because nothing was looking.
+  `test_docs.py` compares every one of them against what pytest actually
+  collects, so a new test fails the suite until the tables are updated.
+
+  Ground truth is *collection*, not a second full run, so the rule is that the
+  numbers a line states must **sum** to what is collected: `242 passed, 17
+  skipped` is 259, and `39 (+17 skipped)` is 56 on the M8 row. That also makes
+  the numbers machine-independent -- installing robosuite changes which tests
+  pass, not how many exist. Adding a test module fails the suite too, until it
+  has a row.
+
+  A number that is deliberately frozen -- the benchmark-installed worlds, last
+  measured when the adapters landed -- is exempt only if its own line says so, in
+  words a reader sees: `re-measured`, `measured at`, or a `†`. The exemption is
+  the disclosure, and it is per line, because a paragraph-level one let a single
+  disclaimer cover a whole table and the live row in it went unchecked.
 
 ## Style
 

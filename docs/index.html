@@ -196,7 +196,7 @@
       <span class="chip">macOS / Apple Silicon</span>
       <span class="chip">100 Hz control</span>
       <span class="chip">5 benchmarks</span>
-      <span class="chip ok">230 tests passing</span>
+      <span class="chip ok">242 passed / 17 skipped</span>
     </div>
   </header>
 
@@ -275,7 +275,7 @@ python main.py <span class="fl">--env</span> robosuite:Lift
 <span class="cm"># find your 8BitDo's axis and button indices</span>
 python gamepad_probe.py
 
-<span class="cm"># 230 tests, no display and no gamepad needed</span>
+<span class="cm"># 242 passed, 17 skipped &mdash; no display or gamepad needed</span>
 python -m pytest</pre>
   </section>
 
@@ -362,9 +362,10 @@ python -m pytest</pre>
           <tr><td class="mono id">M5</td><td>Input layer</td><td class="mono">fake pad, no hardware</td><td class="num mono">54</td></tr>
           <tr><td class="mono id">M6</td><td>Render + HUD</td><td class="mono">renders, and mutates nothing</td><td class="num mono">25</td></tr>
           <tr><td class="mono id">M7</td><td>Recording</td><td class="mono">LeRobot v2.1 on disk</td><td class="num mono">23</td></tr>
-          <tr><td class="mono id">M8</td><td>Benchmark adapters</td><td class="mono">one contract, five sims</td><td class="num mono">39</td></tr>
+          <tr><td class="mono id">M8</td><td>Benchmark adapters</td><td class="mono">one contract, five sims</td><td class="num mono">39 +17 skipped</td></tr>
           <tr><td class="mono id">M9</td><td>Policies + replay + eval</td><td class="mono">a recorded episode replays to 1.6e-7</td><td class="num mono">26</td></tr>
           <tr><td class="mono">&mdash;</td><td>Hard rule</td><td class="mono">runs with <span class="mono">import pygame</span> broken</td><td class="num mono">6</td></tr>
+          <tr><td class="mono">&mdash;</td><td>Docs</td><td class="mono">every count in every doc, against pytest</td><td class="num mono">12</td></tr>
         </tbody>
       </table>
     </div>

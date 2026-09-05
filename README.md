@@ -180,15 +180,22 @@ pipeline calls, so it must run where there is no display. See `CLAUDE.md` for th
 ## Tests
 
 ```sh
-python -m pytest -q          # 230 tests, ~15 s, no display and no gamepad needed
+python -m pytest -q          # 242 passed, 17 skipped in ~15 s, no display needed
 ```
 
 Benchmark tests skip cleanly when the benchmark isn't installed, so a bare
-checkout stays green (230 passed / 17 skipped).
+checkout stays green (242 passed / 17 skipped).
 
 Physics tests assert on numbers — contact count, joint velocity, tracking error,
 cube height, score — and the grasp tests are parametrised over 12 random spawns,
 all of which must pass.
+
+The docs are tested too: `test_docs.py` checks every test count quoted in this
+file, `CLAUDE.md`, `DEVLOG.md`, `BENCHMARKS.md`, `environment.yml` and the
+project page against what pytest actually collects, so adding a test fails the
+suite until the tables are updated. A number kept deliberately as history is
+exempt only when its own line says so — `not re-measured`, or a `†` — so the
+exemption is visible to a reader as well as to the test.
 
 ## Data collection
 
