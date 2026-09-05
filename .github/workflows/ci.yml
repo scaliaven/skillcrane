@@ -51,3 +51,40 @@ jobs:
           SDL_VIDEODRIVER: dummy
           MUJOCO_GL: ${{ runner.os == 'Linux' && 'egl' || '' }}
         run: python main.py --headless
+
+      - name: Policy acceptance run
+        env:
+          SDL_VIDEODRIVER: dummy
+          MUJOCO_GL: ${{ runner.os == 'Linux' && 'egl' || '' }}
+        # Exits non-zero unless the scripted policy scores on every seed, which
+        # is the same bar the grasp milestone is held to.
+        run: python main.py --eval 6 --seed 0
+
+  core-only:
+    # The docs promise pyarrow and pillow are optional, and nothing tested that:
+    # ReplayPolicy.from_dataset imported pyarrow before checking the path it was
+    # given, so the whole suite failed on the install this job makes. Core deps
+    # only, so that claim has to stay true.
+    name: core deps only (no --record extras)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install OpenGL for MuJoCo's offscreen renderer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libosmesa6
+      - name: Install only what the game itself needs
+        run: |
+          python -m pip install --upgrade pip
+          pip install "mujoco>=3.1" "pygame>=2.5" "numpy>=1.26" "pytest>=8.0"
+      - name: Run tests
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          MUJOCO_GL: egl
+        # Recording tests skip themselves; nothing may fail.
+        run: python -m pytest -q

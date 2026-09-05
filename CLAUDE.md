@@ -349,6 +349,14 @@ including the Ultimate 2C, use a switch on the back instead.
 ## Testing rules
 
 - Every test runs headless with no display and no gamepad.
+- **The optional deps really are optional, and CI proves it.** The whole
+  suite must pass with only `mujoco`, `pygame`, `numpy` and `pytest`
+  installed -- the `core-only` job installs exactly that. It exists because
+  `ReplayPolicy.from_dataset` imported pyarrow before checking the path it was
+  handed, so on a minimal install the suite failed and a mistyped `--policy
+  replay:` path reported `ModuleNotFoundError: pyarrow` instead of the path.
+  Anything reaching for pyarrow or pillow imports it inside the function and
+  after whatever can be answered without it.
 - Physics tests assert on numbers (`ncon`, `|qvel|`, tracking error, cube z,
   score), never on "it looked fine."
 - Grasp tests are parametrised over random seeds. A single lucky seed is not a

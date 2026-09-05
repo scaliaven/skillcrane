@@ -219,13 +219,18 @@ class ReplayPolicy(Policy):
     @classmethod
     def from_dataset(cls, root, episode: int = 0, **kw) -> "ReplayPolicy":
         """Load one episode's actions from a LeRobot directory written here."""
-        import pyarrow.parquet as pq          # optional dep, same as recorder.py
-
         from recorder import episode_path     # the writer owns the layout
 
+        # Checked before pyarrow is imported, so a wrong path reports the wrong
+        # path. The other order answered "--policy replay:typo/" with
+        # ModuleNotFoundError: pyarrow on any machine that had not installed the
+        # optional recording deps, which named neither the real problem nor the
+        # file the caller got wrong.
         path = episode_path(root, episode)
         if not path.exists():
             raise FileNotFoundError(f"no episode {episode} in {root} ({path})")
+
+        import pyarrow.parquet as pq          # optional dep, same as recorder.py
         return cls(pq.read_table(path, columns=["action"]).column("action").to_pylist(),
                    **kw)
 

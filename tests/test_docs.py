@@ -176,11 +176,20 @@ def test_the_docs_account_for_every_test_module(collected):
 
     The counts staying right is only half of it: a module nobody documented
     drifts by being invisible rather than by being wrong.
+
+    "Documented but not collected" is checked against the filesystem rather than
+    treated as failure, because it has two very different causes. A module whose
+    file is gone was deleted and the tables are stale. One whose file is still
+    there collected nothing because it importorskipped an optional dependency --
+    `test_m7_record.py` does exactly that without pyarrow, which this repo
+    supports and requirements.txt only happens to install.
     """
     found = {f for f in collected if f}
-    assert found == ACCOUNTED, (
-        f"undocumented modules: {sorted(found - ACCOUNTED)}; "
-        f"documented but not collected: {sorted(ACCOUNTED - found)}")
+    assert not found - ACCOUNTED, \
+        f"test modules missing from the milestone tables: {sorted(found - ACCOUNTED)}"
+    deleted = sorted(f for f in ACCOUNTED - found
+                     if not (ROOT / "tests" / f).exists())
+    assert not deleted, f"documented but no longer in tests/: {deleted}"
 
 
 def test_every_listed_doc_actually_states_a_count():
